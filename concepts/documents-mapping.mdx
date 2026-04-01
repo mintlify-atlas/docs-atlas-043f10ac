@@ -1,0 +1,210 @@
+---
+title: "Documents and Mapping"
+description: "Understand how Elasticsearch stores JSON documents and uses mappings to define the schema of fields and their data types."
+---
+
+A **document** is the basic unit of data in Elasticsearch. It is a JSON object stored within an index. Every document has a unique `_id` within its index, a set of user-defined fields, and a collection of [metadata fields](https://www.elastic.co/guide/en/elasticsearch/reference/current/mapping-fields.html) that Elasticsearch manages automatically (such as `_index`, `_id`, and `_source`).
+
+## Indexing a document
+
+You can store a document using the `POST /<index>/_doc` API (Elasticsearch generates an `_id`) or `PUT /<index>/_doc/<id>` when you want to supply your own identifier:
+
+```json
+POST /products/_doc
+{
+  "name": "Wireless Keyboard",
+  "sku": "KB-9000",
+  "price": 49.99,
+  "in_stock": true,
+  "release_date": "2024-03-15",
+  "tags": ["electronics", "peripherals"],
+  "description": "A compact wireless keyboard with long battery life."
+}
+```
+
+Elasticsearch returns the assigned `_id` and the version number of the newly created document.
+
+## What is a mapping?
+
+A **mapping** defines the schema of an index: which fields exist, what data type each field holds, and how each field should be indexed and stored. Mappings are analogous to a schema definition in a relational database, but they are more flexible — you can add new fields at any time without downtime.
+
+You define a mapping inside the `mappings.properties` object when creating an index:
+
+```json
+PUT /products
+{
+  "mappings": {
+    "properties": {
+      "name":         { "type": "text" },
+      "sku":          { "type": "keyword" },
+      "price":        { "type": "float" },
+      "in_stock":     { "type": "boolean" },
+      "release_date": { "type": "date", "format": "yyyy-MM-dd" },
+      "tags":         { "type": "keyword" },
+      "description":  { "type": "text" },
+      "location":     { "type": "geo_point" },
+      "embedding":    { "type": "dense_vector", "dims": 384 }
+    }
+  }
+}
+```
+
+## Dynamic vs. explicit mapping
+
+Elasticsearch supports two approaches to mapping, and you can combine them within the same index.
+
+<Tabs>
+  <Tab title="Dynamic mapping">
+    When you index a document into an index that has no mapping for a field — or into an index that does not yet exist — Elasticsearch automatically infers a type and adds the field to the mapping. This is called **dynamic mapping**.
+
+    For example, if you index a document with a `price` field containing `49.99`, Elasticsearch maps it as `float`. A field containing `"hello"` is mapped as both `text` (for full-text search) and `keyword` (for aggregations and sorting) via a [multi-field](https://www.elastic.co/guide/en/elasticsearch/reference/current/multi-fields.html).
+
+    Dynamic mapping is convenient for exploration and prototyping, but it can lead to unintended field types in production. You can also define [dynamic templates](https://www.elastic.co/guide/en/elasticsearch/reference/current/dynamic-templates.html) to control how new fields are mapped automatically.
+  </Tab>
+  <Tab title="Explicit mapping">
+    With **explicit mapping**, you define the schema upfront using the `PUT /<index>` API or the [Put Mapping API](https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-put-mapping.html). This gives you full control over field types, analysis settings, and indexing behavior.
+
+    Explicit mapping is recommended for production indices where field types matter for correctness, performance, or storage efficiency.
+
+    You can retrieve the current mapping at any time:
+
+    ```json
+    GET /products/_mapping
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  The `dynamic` setting on an index controls behavior for unmapped fields. Set it to `"strict"` to reject documents that contain unknown fields, `"runtime"` to map new fields as runtime fields, or `false` to ignore unmapped fields (they are stored in `_source` but not indexed). The default is `true` (dynamic mapping enabled).
+</Note>
+
+## Field data types
+
+Elasticsearch provides a rich set of field types grouped by category. Each type determines how values are indexed, stored, and searched.
+
+<AccordionGroup>
+  <Accordion title="Common types" icon="tag">
+    These are the types you will use most often for everyday data.
+
+    | Type | Description |
+    |---|---|
+    | `text` | Analyzed, unstructured text. Tokenized and indexed for full-text search. Not suitable for sorting or aggregations. |
+    | `keyword` | Exact-value strings. Used for filtering, sorting, and aggregations. Not analyzed. |
+    | `boolean` | `true` and `false` values. |
+    | `integer` / `long` | Signed 32-bit and 64-bit integers. |
+    | `float` / `double` | 32-bit and 64-bit IEEE 754 floating-point numbers. |
+    | `date` | Date and datetime values. Accepts a configurable `format` (ISO 8601 by default). |
+    | `binary` | Binary data encoded as a Base64 string. Not indexed by default. |
+    | `alias` | Defines an alternate name for an existing field without duplicating data. |
+
+    A `string` field commonly needs both full-text search and exact filtering. Use a multi-field to achieve both:
+
+    ```json
+    "name": {
+      "type": "text",
+      "fields": {
+        "keyword": { "type": "keyword", "ignore_above": 256 }
+      }
+    }
+    ```
+  </Accordion>
+  <Accordion title="Objects and relational types" icon="sitemap">
+    Use these types when your documents contain nested JSON structures or when you need to model relationships between documents.
+
+    | Type | Description |
+    |---|---|
+    | `object` | A JSON object. Sub-fields are flattened into the parent document at index time. |
+    | `nested` | A JSON object whose sub-fields maintain their relationship. Required when you need to query individual objects within an array independently. |
+    | `flattened` | An entire JSON object mapped as a single field. Useful for objects with arbitrary or unpredictable keys. |
+    | `join` | Models a parent/child relationship between documents in the same index. |
+
+    <Warning>
+      Use `nested` instead of `object` when you have an array of objects and need to filter or aggregate on multiple fields within the same object. Plain `object` arrays lose the relationship between sub-fields.
+    </Warning>
+  </Accordion>
+  <Accordion title="Structured data types" icon="list-ol">
+    These types are suited for structured values where you need range queries, IP lookups, or version comparisons.
+
+    | Type | Description |
+    |---|---|
+    | `integer_range`, `float_range`, `date_range`, `ip_range` | Represent a range of values rather than a single value. Support range overlap queries. |
+    | `ip` | IPv4 and IPv6 addresses. Supports CIDR notation in queries. |
+    | `version` | Software version strings following Semantic Versioning (semver) precedence rules. |
+  </Accordion>
+  <Accordion title="Text search types" icon="magnifying-glass">
+    Beyond the core `text` type, Elasticsearch provides specialized types for advanced search scenarios.
+
+    | Type | Description |
+    |---|---|
+    | `text` | Standard analyzed text for full-text search. |
+    | `match_only_text` | A space-optimized variant of `text` that trades positional scoring for reduced storage. |
+    | `search_as_you_type` | Optimized for prefix and infix matching to power as-you-type search UIs. |
+    | `semantic_text` | Stores text and its inferred embeddings for [semantic search](https://www.elastic.co/guide/en/elasticsearch/reference/current/semantic-search.html). Requires an inference endpoint. |
+    | `completion` | Optimized for low-latency autocomplete suggestions via the Suggest API. |
+    | `token_count` | Stores the number of tokens produced by analyzing a text value. |
+  </Accordion>
+  <Accordion title="Document ranking types" icon="star">
+    These types are used for vector search and learning-to-rank scenarios.
+
+    | Type | Description |
+    |---|---|
+    | `dense_vector` | Stores a fixed-length array of float values. Used for k-nearest neighbor (kNN) vector search. Requires specifying `dims` (number of dimensions). |
+    | `sparse_vector` | Stores sparse float vectors. Used with models that produce sparse representations such as ELSER. |
+    | `rank_feature` | A single numeric feature used to boost scores at query time via the `rank_feature` query. |
+    | `rank_features` | A map of numeric features used to boost scores at query time. |
+
+    Example `dense_vector` mapping for a 384-dimension embedding model:
+
+    ```json
+    "embedding": {
+      "type": "dense_vector",
+      "dims": 384,
+      "index": true,
+      "similarity": "cosine"
+    }
+    ```
+  </Accordion>
+  <Accordion title="Spatial data types" icon="map-pin">
+    Use these types to store and query geographic or cartesian coordinates.
+
+    | Type | Description |
+    |---|---|
+    | `geo_point` | A latitude/longitude point on the Earth's surface. Supports distance queries, bounding box filters, and geo-aggregations. |
+    | `geo_shape` | Complex geographic shapes such as polygons, linestrings, and multi-geometries. |
+    | `point` | An arbitrary point in a 2D Cartesian coordinate system (not geographic). |
+    | `shape` | Arbitrary Cartesian geometries. |
+
+    Example `geo_point` value formats (all equivalent):
+
+    ```json
+    { "location": { "lat": 51.5074, "lon": -0.1278 } }
+    { "location": "51.5074,-0.1278" }
+    { "location": [  -0.1278, 51.5074 ] }
+    ```
+  </Accordion>
+  <Accordion title="Aggregate metric types" icon="chart-bar">
+    These types store pre-aggregated data, making them useful for rollup indices and summary statistics.
+
+    | Type | Description |
+    |---|---|
+    | `aggregate_metric_double` | Stores pre-aggregated values (`min`, `max`, `sum`, `value_count`) for a metric. Aggregation queries operate on these pre-computed values. |
+    | `histogram` | Stores pre-aggregated numerical data in the form of a T-Digest or HDR histogram for use with percentile and histogram aggregations. |
+  </Accordion>
+</AccordionGroup>
+
+## Mapping parameters
+
+Beyond the `type`, field mappings accept parameters that control indexing behavior. The `index` parameter is one of the most important:
+
+```json
+"raw_payload": {
+  "type": "text",
+  "index": false
+}
+```
+
+Setting `"index": false` stores the field value in `_source` but does not build an inverted index for it, saving disk space when you only need to retrieve the value but never search on it.
+
+<Tip>
+  Use `"index": false` for large free-text fields you only display to users but never filter or search on, such as raw log payloads or HTML content. This reduces index size and speeds up indexing.
+</Tip>

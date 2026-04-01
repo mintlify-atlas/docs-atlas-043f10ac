@@ -1,97 +1,64 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Elasticsearch Documentation"
+description: "Distributed, RESTful search and analytics engine — full-text search, vector search, and real-time analytics at scale."
 ---
 
-## Setting up
+Elasticsearch is a distributed search and analytics engine built on Apache Lucene. It lets you store, search, and analyze large volumes of data in near real time — powering full-text search, vector similarity search, log analytics, and AI-augmented applications.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run Elasticsearch locally and make your first search query in minutes.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Installation" icon="download" href="/installation">
+    Install and configure Elasticsearch on your own infrastructure.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Core Concepts" icon="book" href="/concepts/indices-shards">
+    Learn about indices, shards, documents, mappings, and cluster architecture.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API Reference" icon="code" href="/api/conventions">
+    Explore the full REST API — document, search, index, and cluster operations.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What you can build
 
-Everything you need to create world-class documentation.
+<CardGroup cols={2}>
+  <Card title="Full-Text Search" icon="magnifying-glass" href="/search/query-dsl">
+    Powerful Query DSL with relevance scoring, highlighting, and suggestions.
+  </Card>
+  <Card title="Vector Search" icon="brain" href="/search/vector-search">
+    Semantic and k-nearest neighbor search with dense and sparse vectors.
+  </Card>
+  <Card title="ES|QL Analytics" icon="chart-bar" href="/search/esql">
+    Piped query language for filtering, aggregating, and transforming data.
+  </Card>
+  <Card title="Aggregations" icon="layer-group" href="/search/aggregations">
+    Bucket, metric, and pipeline aggregations for real-time analytics.
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Get started
 
-## Need inspiration?
-
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<Steps>
+  <Step title="Run Elasticsearch locally">
+    Use the start-local script to spin up Elasticsearch and Kibana with Docker:
+    ```bash
+    curl -fsSL https://elastic.co/start-local | sh
+    ```
+  </Step>
+  <Step title="Index your first document">
+    ```bash
+    curl -X POST "localhost:9200/my-index/_doc" \
+      -H "Content-Type: application/json" \
+      -d '{"title": "Hello Elasticsearch", "body": "Distributed search at scale"}'
+    ```
+  </Step>
+  <Step title="Search your data">
+    ```bash
+    curl "localhost:9200/my-index/_search?q=hello"
+    ```
+  </Step>
+  <Step title="Explore the docs">
+    Dive into [Core Concepts](/concepts/indices-shards), [Indexing & Data](/indexing/ingest-data), and the [API Reference](/api/conventions).
+  </Step>
+</Steps>

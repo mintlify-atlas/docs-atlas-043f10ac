@@ -1,0 +1,111 @@
+---
+title: "Indices and Shards"
+description: "Learn how Elasticsearch organizes data into indices and distributes it across shards for scalability and resilience."
+---
+
+An **index** is a logical namespace that holds a collection of documents. It is analogous to a table in a relational database: every document you store in Elasticsearch belongs to exactly one index, and every index has a name you use to read from and write to it.
+
+## What is an index?
+
+An index is more than just a container. It bundles together:
+
+- A **mapping** that defines the schema of the documents it holds.
+- **Settings** that control how data is stored, replicated, and analyzed.
+- A collection of **shards** that physically store the data on disk.
+
+When you index a document, Elasticsearch routes it to the correct shard, writes it to the primary, and replicates it to any replica shards — all transparently.
+
+## Primary and replica shards
+
+Elasticsearch splits each index into one or more **shards**. There are two kinds:
+
+<Columns cols={2}>
+  <Card title="Primary shards" icon="database">
+    Hold the original copy of the data. Every write operation targets a primary shard first. The number of primary shards is fixed at index creation time and cannot be changed afterward without reindexing.
+  </Card>
+  <Card title="Replica shards" icon="copy">
+    Hold identical copies of a primary shard. Replicas provide redundancy against node failure and increase read throughput because search requests can be served by either the primary or any of its replicas. The replica count can be changed at any time.
+  </Card>
+</Columns>
+
+## How sharding works
+
+When you create an index with `N` primary shards and `M` replicas, Elasticsearch stores `N × (M + 1)` shard copies across the cluster nodes. Each document is assigned to exactly one primary shard using a deterministic hash of its `_id`:
+
+```
+shard = hash(_routing) % number_of_primary_shards
+```
+
+Because the formula depends on the total number of primary shards, that number must be fixed at creation time.
+
+<Note>
+  Replica shards are never allocated on the same node as their corresponding primary shard. A cluster with only one node will show a **yellow** health status when replicas are configured, because there is nowhere to place them.
+</Note>
+
+## Creating an index with shard settings
+
+Use the `PUT /<index>` API to create an index and specify shard counts in the `settings` block:
+
+```json
+PUT /my-index
+{
+  "settings": {
+    "number_of_shards": 3,
+    "number_of_replicas": 1
+  }
+}
+```
+
+This creates an index with 3 primary shards and 1 replica per primary, giving 6 total shard copies distributed across the cluster.
+
+To update the replica count on a live index (primary shard count cannot be changed):
+
+```json
+PUT /my-index/_settings
+{
+  "number_of_replicas": 2
+}
+```
+
+<Warning>
+  `number_of_shards` is fixed at index creation and cannot be changed afterward. If you need a different primary shard count, you must create a new index and use the [Reindex API](https://www.elastic.co/guide/en/elasticsearch/reference/current/docs-reindex.html) to migrate data.
+</Warning>
+
+## Shard sizing best practices
+
+<AccordionGroup>
+  <Accordion title="Target 10–50 GB per shard">
+    Shards below 1 GB impose unnecessary overhead on the cluster. Shards above 50 GB become slow to recover after a node restart and difficult to rebalance. Aim for a shard size in the 10–50 GB range for most workloads. Use `GET /_cat/shards?v&s=store:desc` to check current shard sizes.
+  </Accordion>
+  <Accordion title="Avoid over-sharding">
+    Each shard is a Lucene index that consumes file handles, heap memory, and CPU. A common mistake is creating too many small primary shards. As a rule of thumb, keep the number of shards per GB of heap to around 20 or fewer. For a node with 30 GB of heap, that means no more than ~600 shards total.
+  </Accordion>
+  <Accordion title="Use one primary shard for small indices">
+    For indices that will hold only a small amount of data — for example, a configuration index or a low-volume log stream — a single primary shard is often the right choice. It eliminates cross-shard scatter-gather overhead and simplifies operations.
+  </Accordion>
+  <Accordion title="Scale writes with more primary shards">
+    If a single primary shard becomes an indexing bottleneck, increasing the primary shard count (on a new index) distributes write load. Pair this with the [Rollover API](https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-rollover-index.html) for time-series data to automate index rotation.
+  </Accordion>
+</AccordionGroup>
+
+## Checking shard allocation
+
+You can inspect how shards are distributed across nodes at any time:
+
+```json
+GET /_cat/shards/my-index?v&h=index,shard,prirep,state,node,store
+```
+
+Example response:
+
+```
+index     shard prirep state   node          store
+my-index  0     p      STARTED node-1        8.5mb
+my-index  0     r      STARTED node-2        8.5mb
+my-index  1     p      STARTED node-2        9.1mb
+my-index  1     r      STARTED node-3        9.1mb
+my-index  2     p      STARTED node-3        7.8mb
+my-index  2     r      STARTED node-1        7.8mb
+```
+
+`p` indicates a primary shard and `r` a replica. Each primary and its replica are on different nodes.

@@ -1,0 +1,432 @@
+---
+title: "Query DSL"
+description: "Write powerful JSON-based queries using Elasticsearch's Query Domain Specific Language. Learn leaf queries, compound queries, full-text search, and pagination."
+---
+
+Elasticsearch provides a full Query DSL (Domain Specific Language) based on JSON to define queries. Think of the Query DSL as an abstract syntax tree of queries, consisting of two types of clauses: leaf query clauses and compound query clauses.
+
+Query clauses behave differently depending on whether they are used in **query context** or **filter context**.
+
+<CardGroup cols={2}>
+  <Card title="Query context" icon="magnifying-glass">
+    Answers "how well does this document match?" Elasticsearch computes a relevance `_score` for each document. Use for full-text search and ranking.
+  </Card>
+  <Card title="Filter context" icon="filter">
+    Answers "does this document match?" No score is computed. Results are cached automatically. Use for exact matches on dates, statuses, and keywords.
+  </Card>
+</CardGroup>
+
+<Note>
+  Prefer filter context for exact-match conditions. Filters are cached at the segment level and do not incur scoring overhead, which makes them significantly faster.
+</Note>
+
+## Sending queries
+
+Queries are sent in the request body of `GET` or `POST` requests to the `/_search` endpoint:
+
+```json
+POST /my-index/_search
+{
+  "query": {
+    "match": {
+      "message": "elasticsearch query dsl"
+    }
+  }
+}
+```
+
+---
+
+## Leaf queries
+
+Leaf queries look for a particular value in a particular field. They can be used on their own or combined inside compound queries.
+
+<AccordionGroup>
+  <Accordion title="match">
+    The standard query for full-text search. Analyzes the query string before matching.
+
+    ```json
+    GET /logs/_search
+    {
+      "query": {
+        "match": {
+          "message": {
+            "query": "connection timeout",
+            "operator": "and"
+          }
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="term">
+    Finds documents that contain an exact, unanalyzed value. Best for `keyword`, numeric, and date fields.
+
+    ```json
+    GET /orders/_search
+    {
+      "query": {
+        "term": {
+          "status": {
+            "value": "shipped"
+          }
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="terms">
+    Like `term`, but matches any value from a provided list.
+
+    ```json
+    GET /orders/_search
+    {
+      "query": {
+        "terms": {
+          "status": ["shipped", "delivered"]
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="range">
+    Matches documents with field values within a given range. Supports `gt`, `gte`, `lt`, `lte`.
+
+    ```json
+    GET /events/_search
+    {
+      "query": {
+        "range": {
+          "@timestamp": {
+            "gte": "2024-01-01",
+            "lt": "2025-01-01"
+          }
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="exists">
+    Returns documents that have at least one non-null value for the specified field.
+
+    ```json
+    GET /products/_search
+    {
+      "query": {
+        "exists": {
+          "field": "price"
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="prefix">
+    Matches documents where the field value starts with the given prefix. Runs on unanalyzed terms.
+
+    ```json
+    GET /users/_search
+    {
+      "query": {
+        "prefix": {
+          "username": {
+            "value": "admin"
+          }
+        }
+      }
+    }
+    ```
+
+    <Warning>
+      `prefix` queries can be slow on large indices unless the field uses `index_prefixes`. Consider enabling `index_prefixes` in your mapping for frequently-used prefix queries.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="wildcard">
+    Matches documents using `*` (any number of characters) and `?` (single character) patterns.
+
+    ```json
+    GET /files/_search
+    {
+      "query": {
+        "wildcard": {
+          "filename": {
+            "value": "report_202?_*.pdf"
+          }
+        }
+      }
+    }
+    ```
+
+    <Warning>
+      Wildcard queries can be expensive. Set `search.allow_expensive_queries` to `false` to prevent them on performance-sensitive clusters.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="fuzzy">
+    Matches terms that are similar to the query value, based on edit distance (Levenshtein distance). Useful for handling typos.
+
+    ```json
+    GET /products/_search
+    {
+      "query": {
+        "fuzzy": {
+          "name": {
+            "value": "elasticsearh",
+            "fuzziness": "AUTO"
+          }
+        }
+      }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Full-text queries
+
+Full-text queries analyze the query string using the same analyzer applied to the field at index time, then search for the analyzed tokens.
+
+<AccordionGroup>
+  <Accordion title="match_phrase">
+    Matches documents where the field contains the exact phrase, with tokens in the same order and position.
+
+    ```json
+    GET /articles/_search
+    {
+      "query": {
+        "match_phrase": {
+          "content": "quick brown fox"
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="multi_match">
+    Runs a `match` query across multiple fields. Useful when you don't know which field contains the value.
+
+    ```json
+    GET /articles/_search
+    {
+      "query": {
+        "multi_match": {
+          "query": "elasticsearch performance",
+          "fields": ["title^3", "body", "tags"],
+          "type": "best_fields"
+        }
+      }
+    }
+    ```
+
+    The `^3` notation boosts the `title` field's score by a factor of three.
+  </Accordion>
+
+  <Accordion title="query_string">
+    Parses a query using the Lucene query syntax. Supports field names, wildcards, boolean operators, and ranges inline in the query string.
+
+    ```json
+    GET /logs/_search
+    {
+      "query": {
+        "query_string": {
+          "query": "status:error AND level:>=3",
+          "default_field": "message"
+        }
+      }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Compound queries
+
+Compound queries wrap leaf or other compound queries to combine or modify their behavior.
+
+### bool query
+
+The `bool` query is the most commonly used compound query. It combines multiple clauses using four typed occurrences:
+
+| Clause | Behavior |
+|---|---|
+| `must` | Clause must match. Contributes to the score. |
+| `should` | Clause should match. Contributes to the score. |
+| `must_not` | Clause must not match. No score contribution. Runs in filter context. |
+| `filter` | Clause must match. No score contribution. Runs in filter context (cached). |
+
+```json
+POST /products/_search
+{
+  "query": {
+    "bool": {
+      "must": [
+        { "match": { "description": "running shoes" } }
+      ],
+      "filter": [
+        { "term": { "in_stock": true } },
+        { "range": { "price": { "lte": 150 } } }
+      ],
+      "must_not": [
+        { "term": { "brand": "discontinued" } }
+      ],
+      "should": [
+        { "term": { "color": "blue" } }
+      ],
+      "minimum_should_match": 0
+    }
+  }
+}
+```
+
+<Tip>
+  Place exact-match conditions in the `filter` clause rather than `must`. Filter clauses run in filter context (no scoring, cached), which is faster for conditions like `term`, `range`, or `exists`.
+</Tip>
+
+### dis_max query
+
+Returns documents matching any of the wrapped queries. The document score is the maximum score from any single matching clause, rather than the sum.
+
+```json
+GET /articles/_search
+{
+  "query": {
+    "dis_max": {
+      "queries": [
+        { "match": { "title": "elasticsearch" } },
+        { "match": { "body": "elasticsearch" } }
+      ],
+      "tie_breaker": 0.3
+    }
+  }
+}
+```
+
+### function_score query
+
+Modifies the scores of documents returned by a query using custom scoring functions such as `weight`, `field_value_factor`, `gauss`, or `script_score`.
+
+```json
+GET /venues/_search
+{
+  "query": {
+    "function_score": {
+      "query": { "match": { "name": "restaurant" } },
+      "functions": [
+        {
+          "gauss": {
+            "location": {
+              "origin": "51.5074, -0.1278",
+              "scale": "2km",
+              "decay": 0.5
+            }
+          }
+        }
+      ],
+      "boost_mode": "multiply"
+    }
+  }
+}
+```
+
+---
+
+## Pagination
+
+<Tabs>
+  <Tab title="from / size">
+    The simplest approach. Works well for shallow pagination (up to ~10,000 results by default).
+
+    ```json
+    GET /products/_search
+    {
+      "from": 20,
+      "size": 10,
+      "query": {
+        "match_all": {}
+      }
+    }
+    ```
+
+    `from` is zero-indexed. The example above returns results 21–30.
+
+    <Warning>
+      Deep pagination using `from` + `size` is expensive. Each page requires Elasticsearch to retrieve and discard all preceding results. Use `search_after` for deep pagination.
+    </Warning>
+  </Tab>
+
+  <Tab title="search_after">
+    Stateless, cursor-based pagination using the sort values from the last result. Suitable for deep pagination over large result sets.
+
+    ```json
+    GET /events/_search
+    {
+      "size": 10,
+      "query": { "match_all": {} },
+      "sort": [
+        { "@timestamp": "desc" },
+        { "_id": "asc" }
+      ],
+      "search_after": ["2024-11-15T12:00:00Z", "doc-1234"]
+    }
+    ```
+
+    Pass the `sort` values from the last hit of a page as the `search_after` value for the next page. Include a tiebreaker field (such as `_id`) to ensure stable ordering.
+  </Tab>
+
+  <Tab title="scroll (deprecated)">
+    Retrieves large snapshots of data for processing. Deprecated in favor of `search_after` with a PIT (point in time).
+
+    ```json
+    POST /logs/_search?scroll=1m
+    {
+      "size": 1000,
+      "query": { "match_all": {} }
+    }
+    ```
+
+    Use the `_scroll_id` from the response to fetch the next batch. Avoid scroll for user-facing pagination.
+  </Tab>
+</Tabs>
+
+---
+
+## Sorting
+
+By default, results are sorted by `_score` descending. You can override this with any field value.
+
+<CodeGroup>
+
+```json sort by field
+POST /products/_search
+{
+  "query": { "match_all": {} },
+  "sort": [
+    { "price": { "order": "asc" } },
+    { "_score": { "order": "desc" } }
+  ]
+}
+```
+
+```json sort by score
+POST /articles/_search
+{
+  "query": {
+    "match": { "body": "distributed systems" }
+  },
+  "sort": [
+    { "_score": { "order": "desc" } },
+    { "published_at": { "order": "desc" } }
+  ]
+}
+```
+
+</CodeGroup>
+
+You can include multiple sort criteria. Documents are sorted by the first criterion; ties are broken by subsequent criteria.

@@ -1,0 +1,332 @@
+---
+title: "ES|QL"
+description: "Query, filter, and analyze Elasticsearch data using ES|QL — a piped query language designed for analytics, time-series analysis, and large-scale data exploration."
+---
+
+**Elasticsearch Query Language (ES|QL)** is a piped query language for filtering, transforming, and analyzing data. You can author ES|QL queries to find specific events, perform statistical analysis, and create visualizations.
+
+ES|QL uses pipes (`|`) to manipulate and transform data step by step. The output of one operation becomes the input for the next, enabling complex data transformations and analysis in a single readable query.
+
+<Tip>
+  ES|QL is optimized for analytics on large datasets. Use it for aggregations, time-series analysis, and computed fields. For precise document retrieval with complex scoring, Query DSL remains the better fit.
+</Tip>
+
+---
+
+## How it works
+
+A query is a pipeline of commands separated by the pipe character (`|`). Each command operates on the output of the previous one:
+
+```esql
+FROM sample_data
+| WHERE @timestamp > NOW() - 24h
+| STATS avg_duration = AVG(duration) BY service
+| SORT avg_duration DESC
+| LIMIT 10
+```
+
+This query:
+1. Reads from `sample_data`
+2. Filters to documents from the last 24 hours
+3. Computes the average `duration` grouped by `service`
+4. Sorts by average duration descending
+5. Returns the top 10 results
+
+---
+
+## Running ES|QL queries
+
+<Tabs>
+  <Tab title="REST API">
+    Send queries to the `_query` endpoint with a `Content-Type` of `application/json`:
+
+    ```bash
+    POST /_query
+    Content-Type: application/json
+
+    {
+      "query": "FROM logs-* | WHERE level == \"error\" | LIMIT 100"
+    }
+    ```
+
+    The response returns rows and column metadata:
+
+    ```json
+    {
+      "columns": [
+        { "name": "@timestamp", "type": "date" },
+        { "name": "message",    "type": "keyword" },
+        { "name": "level",      "type": "keyword" }
+      ],
+      "values": [
+        ["2024-11-15T10:30:00Z", "Connection refused", "error"],
+        ["2024-11-15T10:31:00Z", "Timeout exceeded",   "error"]
+      ]
+    }
+    ```
+  </Tab>
+
+  <Tab title="Kibana">
+    You can run ES|QL queries interactively in several Kibana interfaces:
+
+    - **Discover**: Switch the query language selector to ES|QL and write queries directly in the search bar.
+    - **Dashboards**: Create panels driven by ES|QL queries using the **ES|QL** visualization type.
+    - **Dev Tools**: Write and execute ES|QL from the Console.
+
+    Kibana renders ES|QL results as tables, metric visualizations, time-series charts, and more — without requiring aggregation configuration.
+  </Tab>
+</Tabs>
+
+---
+
+## Source commands
+
+Source commands begin every ES|QL pipeline. They define the data to operate on.
+
+### FROM
+
+Reads documents from one or more indices or data streams. Supports wildcards and comma-separated patterns.
+
+```esql
+FROM logs-*, metrics-*
+| LIMIT 100
+```
+
+---
+
+## Processing commands
+
+Processing commands transform the data flowing through the pipeline.
+
+<AccordionGroup>
+  <Accordion title="WHERE — filter rows">
+    Keeps only rows matching the condition. Supports comparison operators, boolean logic, and functions.
+
+    ```esql
+    FROM logs
+    | WHERE level == "error" AND service != "heartbeat"
+    | LIMIT 50
+    ```
+  </Accordion>
+
+  <Accordion title="STATS — aggregate data">
+    Computes aggregations over rows, optionally grouped with `BY`. Produces one row per group.
+
+    ```esql
+    FROM orders
+    | STATS
+        total_revenue = SUM(amount),
+        order_count   = COUNT(*),
+        avg_value     = AVG(amount)
+      BY region
+    | SORT total_revenue DESC
+    ```
+  </Accordion>
+
+  <Accordion title="EVAL — compute new fields">
+    Creates new columns by evaluating expressions against each row. The original row is preserved with the new field appended.
+
+    ```esql
+    FROM sales
+    | EVAL
+        revenue_usd = quantity * unit_price,
+        is_large    = quantity > 100
+    | WHERE is_large
+    ```
+  </Accordion>
+
+  <Accordion title="SORT — order results">
+    Sorts rows by one or more expressions. `ASC` is the default; use `DESC` for descending order. `NULLS FIRST` and `NULLS LAST` control null ordering.
+
+    ```esql
+    FROM products
+    | SORT price ASC, name ASC NULLS LAST
+    ```
+  </Accordion>
+
+  <Accordion title="LIMIT — cap row count">
+    Restricts the number of rows returned by the pipeline. Always include `LIMIT` in exploratory queries to avoid retrieving millions of rows.
+
+    ```esql
+    FROM events
+    | SORT @timestamp DESC
+    | LIMIT 20
+    ```
+  </Accordion>
+
+  <Accordion title="KEEP and DROP — select columns">
+    `KEEP` retains only the specified columns. `DROP` removes the specified columns. Both accept wildcards.
+
+    ```esql
+    FROM logs
+    | KEEP @timestamp, message, level, service
+
+    FROM logs
+    | DROP internal_*, debug_*
+    ```
+  </Accordion>
+
+  <Accordion title="RENAME — rename a column">
+    Renames one or more columns using the `AS` keyword.
+
+    ```esql
+    FROM metrics
+    | RENAME cpu_percent AS cpu_usage, mem_bytes AS memory
+    ```
+  </Accordion>
+
+  <Accordion title="DISSECT and GROK — parse strings">
+    Both commands extract structured fields from unstructured string fields.
+
+    - **DISSECT** uses a fixed-separator pattern.
+    - **GROK** uses named regular expression patterns (compatible with Logstash grok).
+
+    ```esql
+    FROM raw_logs
+    | DISSECT message "%{ts} %{level} %{msg}"
+
+    FROM apache_logs
+    | GROK message "%{IPORHOST:client_ip} %{HTTPDATE:timestamp} \"%{WORD:method} %{URIPATHPARAM:path}\""
+    ```
+  </Accordion>
+
+  <Accordion title="MV_EXPAND — expand multi-value fields">
+    Converts rows with multi-value fields into multiple rows, one per value. Useful when a field contains an array of values.
+
+    ```esql
+    FROM products
+    | MV_EXPAND tags
+    | STATS count = COUNT(*) BY tags
+    | SORT count DESC
+    ```
+  </Accordion>
+
+  <Accordion title="ENRICH — join with enrich policies">
+    Looks up fields from an enrich policy and appends them to each row. Similar to a left join against a reference dataset.
+
+    ```esql
+    FROM orders
+    | ENRICH customer_policy ON customer_id
+      WITH name, tier, region
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Functions
+
+ES|QL includes a broad set of built-in functions.
+
+<Tabs>
+  <Tab title="Date functions">
+    | Function | Description |
+    |---|---|
+    | `NOW()` | Current timestamp |
+    | `DATE_TRUNC(interval, date)` | Truncates a date to the specified interval |
+    | `DATE_FORMAT(format, date)` | Formats a date as a string |
+    | `DATE_EXTRACT(part, date)` | Extracts a date component (year, month, etc.) |
+
+    ```esql
+    FROM events
+    | EVAL hour = DATE_EXTRACT("hour_of_day", @timestamp)
+    | STATS count = COUNT(*) BY hour
+    | SORT hour ASC
+    ```
+  </Tab>
+
+  <Tab title="Math functions">
+    | Function | Description |
+    |---|---|
+    | `ABS(n)` | Absolute value |
+    | `CEIL(n)` | Rounds up to nearest integer |
+    | `FLOOR(n)` | Rounds down to nearest integer |
+    | `ROUND(n, decimals)` | Rounds to specified decimal places |
+    | `LOG(base, n)` | Logarithm |
+    | `SQRT(n)` | Square root |
+    | `POW(base, exp)` | Exponentiation |
+
+    ```esql
+    FROM transactions
+    | EVAL log_amount = LOG(10, amount)
+    | STATS avg_log = AVG(log_amount) BY category
+    ```
+  </Tab>
+
+  <Tab title="String functions">
+    | Function | Description |
+    |---|---|
+    | `LENGTH(s)` | Character count |
+    | `LTRIM(s)` / `RTRIM(s)` | Remove leading/trailing whitespace |
+    | `TO_LOWER(s)` / `TO_UPPER(s)` | Change case |
+    | `CONCAT(s1, s2, ...)` | Concatenate strings |
+    | `SUBSTRING(s, start, length)` | Extract substring |
+    | `REPLACE(s, pattern, replacement)` | Replace occurrences |
+    | `SPLIT(s, delimiter)` | Split into multi-value field |
+
+    ```esql
+    FROM users
+    | EVAL domain = SPLIT(email, "@")
+    | MV_EXPAND domain
+    | WHERE domain != TO_LOWER(SUBSTRING(email, 0, 1))
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Examples
+
+<Steps>
+  <Step title="Basic retrieval">
+    Return the 5 most recent error log entries:
+
+    ```esql
+    FROM logs-*
+    | WHERE level == "error"
+    | SORT @timestamp DESC
+    | LIMIT 5
+    ```
+  </Step>
+
+  <Step title="Aggregation with grouping">
+    Count events by status code over the last hour:
+
+    ```esql
+    FROM access-logs
+    | WHERE @timestamp > NOW() - 1h
+    | STATS request_count = COUNT(*) BY status_code
+    | SORT request_count DESC
+    ```
+  </Step>
+
+  <Step title="Computed fields">
+    Calculate latency buckets and find the 99th percentile per service:
+
+    ```esql
+    FROM apm-*
+    | EVAL latency_ms = duration / 1000
+    | STATS p99 = PERCENTILE(latency_ms, 99) BY service.name
+    | SORT p99 DESC
+    | LIMIT 20
+    ```
+  </Step>
+
+  <Step title="String parsing">
+    Extract HTTP method and path from a raw access log field:
+
+    ```esql
+    FROM access-logs
+    | GROK message "%{WORD:method} %{URIPATHPARAM:path} HTTP/%{NUMBER:http_version}"
+    | STATS count = COUNT(*) BY method, path
+    | SORT count DESC
+    | LIMIT 10
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Circuit breaker settings
+
+ES|QL enforces memory limits using circuit breakers to protect cluster stability. You can tune these limits via the circuit breaker settings in your cluster configuration. Queries that exceed the memory limit are terminated with an error rather than causing a node to run out of heap.

@@ -1,0 +1,258 @@
+---
+title: "Performance Tuning"
+description: "Tune Elasticsearch indexing throughput, search speed, shard sizing, thread pools, circuit breakers, and slow logs."
+---
+
+Elasticsearch works well out of the box for most workloads. This page covers the settings and techniques you should reach for when a specific bottleneck — high indexing latency, slow queries, heap pressure — needs addressing.
+
+## Indexing performance
+
+### Bulk indexing
+
+Always use the [Bulk API](https://www.elastic.co/guide/en/elasticsearch/reference/current/docs-bulk.html) for high-throughput indexing. A single bulk request per client thread amortizes the per-request overhead across many documents.
+
+Start with batches of 5–15 MB (uncompressed) and tune from there. Larger batches do not always produce better throughput and increase GC pressure.
+
+```json
+POST /_bulk
+{ "index": { "_index": "logs-2026.04.01" } }
+{ "@timestamp": "2026-04-01T00:00:00Z", "message": "started", "level": "INFO" }
+{ "index": { "_index": "logs-2026.04.01" } }
+{ "@timestamp": "2026-04-01T00:00:01Z", "message": "ready", "level": "INFO" }
+```
+
+### Refresh interval
+
+Elasticsearch makes newly indexed documents searchable by performing a *refresh*, which is an expensive operation. The default interval is `1s`.
+
+During a large bulk load, disable refreshes entirely, then re-enable them when the load completes:
+
+<Steps>
+  <Step title="Disable refresh before bulk load">
+    ```json
+    PUT /my-index/_settings
+    {
+      "index.refresh_interval": "-1"
+    }
+    ```
+  </Step>
+  <Step title="Run your bulk indexing job">
+    Send documents using the Bulk API. With refreshes disabled, segment merges are deferred and write throughput increases significantly.
+  </Step>
+  <Step title="Re-enable refresh after the load">
+    ```json
+    PUT /my-index/_settings
+    {
+      "index.refresh_interval": "1s"
+    }
+    ```
+
+    Or reset to the default:
+
+    ```json
+    PUT /my-index/_settings
+    {
+      "index.refresh_interval": null
+    }
+    ```
+  </Step>
+</Steps>
+
+### Replica count during bulk load
+
+Replicas double (or more) the indexing work because each shard copy must receive and index every document. Set replicas to `0` during a large initial load, then increase when the load is complete:
+
+```json
+PUT /my-index/_settings
+{
+  "index.number_of_replicas": 0
+}
+```
+
+After indexing:
+
+```json
+PUT /my-index/_settings
+{
+  "index.number_of_replicas": 1
+}
+```
+
+<Tip>
+  After a large bulk load, call `_forcemerge` to reduce the number of Lucene segments. Fewer segments means faster searches and less heap usage for segment metadata.
+
+  ```json
+  POST /my-index/_forcemerge?max_num_segments=1
+  ```
+
+  Only run `_forcemerge` on indices that will not receive further writes. Merging a write-active index is counterproductive.
+</Tip>
+
+## Search performance
+
+### Caches
+
+Elasticsearch maintains several caches that improve repeated query performance.
+
+<AccordionGroup>
+  <Accordion title="Node query cache (filter cache)">
+    Caches the results of filter clauses (queries in a `filter` context) at the segment level. Shared across all shards on a node.
+
+    Configured per node in `elasticsearch.yml`:
+
+    | Setting | Default | Description |
+    |---|---|---|
+    | `indices.queries.cache.size` | `10%` | Size of the node-level query cache as a percentage of JVM heap, or an absolute byte value. |
+    | `index.queries.cache.enabled` | `true` | Per-index setting to enable or disable the query cache. |
+
+    Filters are cached automatically when Elasticsearch determines the query is used often enough. You cannot manually pin items in the cache.
+  </Accordion>
+
+  <Accordion title="Shard request cache">
+    Caches the local results of search requests on each shard. Particularly effective for aggregations and for `size: 0` queries where only aggregate results are needed.
+
+    The cache is invalidated when the shard is refreshed. It is most beneficial on indices with a slow refresh interval (e.g. `30s` or longer).
+
+    | Setting | Default | Description |
+    |---|---|---|
+    | `indices.requests.cache.size` | `1%` | Size of the shard request cache as a percentage of JVM heap. |
+    | `index.requests.cache.enable` | `true` | Per-index setting to enable or disable the request cache. |
+
+    Pass `request_cache=true` in the query string to force caching on a specific request regardless of its size.
+  </Accordion>
+
+  <Accordion title="Field data cache">
+    Holds uninverted field values in memory for use during aggregations on `text` fields, sorting, and some scripting operations. Field data is loaded lazily on first use and is expensive to build.
+
+    | Setting | Default | Description |
+    |---|---|---|
+    | `indices.fielddata.cache.size` | Unbounded | Maximum heap fraction or byte size for the field data cache. Recommended to set an explicit limit (e.g. `40%`). |
+
+    <Warning>
+      Avoid running aggregations on high-cardinality `keyword` fields without a preceding filter to reduce the number of matching documents. Loading field data for millions of unique values consumes large amounts of heap and can trigger the field data circuit breaker.
+    </Warning>
+
+    Prefer `keyword` fields with `doc_values` (the default) for aggregations. `doc_values` are stored on disk and do not consume heap in the field data cache.
+  </Accordion>
+</AccordionGroup>
+
+## Shard sizing
+
+Shard count and size are the most common source of performance problems in Elasticsearch.
+
+<CardGroup cols={2}>
+  <Card title="Target 10–50 GB per shard" icon="ruler">
+    Shards smaller than 10 GB create overhead: more metadata, more threads, more inter-node coordination. Shards larger than 50 GB slow recovery and rebalancing.
+  </Card>
+  <Card title="Limit shard count per node" icon="server">
+    Each shard consumes JVM heap for metadata. A common guideline is to keep shard count below 20 shards per GB of heap. On an 8 GB heap node, keep shards under ~160.
+  </Card>
+</CardGroup>
+
+When your shard count grows too high due to many small daily indices, consider using [Index Lifecycle Management (ILM)](https://www.elastic.co/guide/en/elasticsearch/reference/current/index-lifecycle-management.html) to roll over and merge older indices, or increase `index.number_of_shards` on future indices to reduce total shard count.
+
+## Thread pools
+
+Elasticsearch uses dedicated thread pools for different operation types. You can see the current state with:
+
+```json
+GET /_cat/thread_pool?v
+```
+
+Key thread pools:
+
+| Pool | Purpose | Default size |
+|---|---|---|
+| `write` | Bulk, index, delete, and update requests | Number of available processors |
+| `search` | Search and aggregation requests | `int((# of available processors * 3) / 2) + 1` |
+| `analyze` | Analyze API requests | 1 |
+
+Thread pool sizes are configurable in `elasticsearch.yml`, but they rarely need changing. The defaults are well-tuned for most hardware.
+
+```yaml
+thread_pool.write.queue_size: 1000
+thread_pool.search.queue_size: 1000
+```
+
+<Note>
+  Increasing `queue_size` delays rejection errors at the cost of higher memory pressure during traffic spikes. Increasing the thread count beyond the number of CPU cores leads to context-switch overhead that degrades throughput rather than improving it.
+</Note>
+
+## Circuit breakers
+
+Circuit breakers prevent JVM out-of-memory errors by rejecting requests that would exceed configured memory limits. When a circuit breaker trips, Elasticsearch returns an HTTP `429` or `503` error rather than crashing.
+
+<AccordionGroup>
+  <Accordion title="Field data circuit breaker">
+    Limits the total amount of heap used by the field data cache.
+
+    | Setting | Default | Description |
+    |---|---|---|
+    | `indices.breaker.fielddata.limit` | `40%` | Maximum heap fraction for field data. Requests that would exceed this trigger a `CircuitBreakingException`. |
+    | `indices.breaker.fielddata.overhead` | `1.03` | A multiplier applied to field data size estimates before checking against the limit. |
+  </Accordion>
+
+  <Accordion title="Request circuit breaker">
+    Limits the memory used by a single request, including in-memory aggregation data structures.
+
+    | Setting | Default | Description |
+    |---|---|---|
+    | `indices.breaker.request.limit` | `60%` | Maximum heap fraction for a single request's in-memory structures. |
+    | `indices.breaker.request.overhead` | `1` | Multiplier applied to request memory estimates. |
+  </Accordion>
+
+  <Accordion title="In-flight requests circuit breaker">
+    Limits the total memory consumed by all currently in-flight requests, including transport and HTTP layer request bodies.
+
+    | Setting | Default | Description |
+    |---|---|---|
+    | `network.breaker.inflight_requests.limit` | `100%` | Maximum heap fraction for in-flight request byte sizes. |
+    | `network.breaker.inflight_requests.overhead` | `2` | Multiplier applied to in-flight request size estimates. |
+  </Accordion>
+
+  <Accordion title="Parent circuit breaker">
+    An overall cap that all other circuit breakers count against. Protects against multiple breakers individually staying within their limits while collectively exhausting the heap.
+
+    | Setting | Default | Description |
+    |---|---|---|
+    | `indices.breaker.total.limit` | `70%` (or `95%` with real memory tracking) | Maximum combined heap fraction for all circuit breakers. |
+    | `indices.breaker.total.use_real_memory` | `true` | When `true`, the parent breaker accounts for actual JVM memory usage rather than estimates. More accurate but slightly more CPU-intensive. |
+  </Accordion>
+</AccordionGroup>
+
+## Slow logs
+
+Slow logs record queries and indexing operations that exceed configurable time thresholds. They are the primary diagnostic tool for identifying expensive operations.
+
+### Search slow log
+
+Set thresholds per index. Requests exceeding the threshold are written to the slow log at the corresponding level.
+
+```json
+PUT /my-index/_settings
+{
+  "index.search.slowlog.threshold.query.warn": "10s",
+  "index.search.slowlog.threshold.query.info": "5s",
+  "index.search.slowlog.threshold.query.debug": "2s",
+  "index.search.slowlog.threshold.query.trace": "500ms",
+  "index.search.slowlog.threshold.fetch.warn": "1s"
+}
+```
+
+### Indexing slow log
+
+```json
+PUT /my-index/_settings
+{
+  "index.indexing.slowlog.threshold.index.warn": "10s",
+  "index.indexing.slowlog.threshold.index.info": "5s",
+  "index.indexing.slowlog.threshold.index.debug": "2s",
+  "index.indexing.slowlog.threshold.index.trace": "500ms"
+}
+```
+
+Slow log output goes to the dedicated slow log files (`*_index_indexing_slowlog.json` and `*_index_search_slowlog.json`) alongside the main Elasticsearch logs.
+
+<Tip>
+  Set thresholds conservatively at first (e.g., `warn` at `5s`) to identify only the most severe outliers. Lower the threshold incrementally once you have addressed the worst offenders. Running all requests through slow logging adds measurable overhead.
+</Tip>

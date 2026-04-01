@@ -1,0 +1,316 @@
+---
+title: "Security"
+description: "Configure authentication, authorization, TLS, API keys, and role-based access control in Elasticsearch 8+."
+---
+
+Security is enabled by default in Elasticsearch 8.0 and later. When you start a new Elasticsearch node for the first time, the security auto-configuration process generates TLS certificates, sets passwords for built-in users, and outputs an enrollment token you can use to connect Kibana.
+
+<Warning>
+  Do not disable security in production. Setting `xpack.security.enabled: false` removes authentication and authorization for all clients, including all Kibana instances that connect to the cluster.
+</Warning>
+
+## General security settings
+
+Set these in `elasticsearch.yml`.
+
+| Setting | Default | Description |
+|---|---|---|
+| `xpack.security.enabled` | `true` | Enables Elasticsearch security features. Must be `true` to use authentication, authorization, and auditing. |
+| `xpack.security.autoconfiguration.enabled` | `true` | Enables security auto-configuration on first start. When `false`, you must configure security manually. |
+| `xpack.security.enrollment.enabled` | `false` | When `true`, the node can generate enrollment tokens for new nodes and Kibana instances. Set automatically by the auto-configuration process. |
+| `xpack.security.fips_mode.enabled` | `false` | Set to `true` when running in a FIPS 140-2 enabled JVM. |
+
+## Authentication
+
+### Built-in users
+
+Elasticsearch ships with several built-in users. These accounts are stored in a special `.security` index and are available as soon as security is enabled.
+
+| Username | Purpose |
+|---|---|
+| `elastic` | Superuser. Full access to all cluster operations. Use for initial setup only; create dedicated users for day-to-day operations. |
+| `kibana_system` | Used by Kibana to connect to Elasticsearch. Do not use for general access. |
+| `logstash_system` | Used by Logstash monitoring agents. |
+| `beats_system` | Used by Beats monitoring agents. |
+| `remote_monitoring_user` | Used by Metricbeat for Stack Monitoring. |
+
+To reset the `elastic` user's password:
+
+```sh
+bin/elasticsearch-reset-password -u elastic
+```
+
+### Authentication realms
+
+Elasticsearch uses a chain of *realms* to authenticate users. Realms are evaluated in `order` from lowest to highest.
+
+<Tabs>
+  <Tab title="Native realm">
+    The default realm. Users are stored in the `.security` index and managed via the Elasticsearch API. Suitable for most deployments.
+
+    ```yaml
+    xpack.security.authc.realms:
+      native.realm1:
+        order: 0
+    ```
+
+    Manage users with the [Users API](https://www.elastic.co/guide/en/elasticsearch/reference/current/security-api-put-user.html) or Kibana's user management UI.
+  </Tab>
+  <Tab title="File realm">
+    Users are defined in a flat file on each node at `$ES_PATH_CONF/users`. Useful for bootstrapping or environments without network access.
+
+    ```yaml
+    xpack.security.authc.realms:
+      file.realm1:
+        order: 0
+    ```
+
+    Manage users with the `elasticsearch-users` tool:
+
+    ```sh
+    bin/elasticsearch-users useradd my_admin -p my_password -r superuser
+    ```
+  </Tab>
+  <Tab title="LDAP / Active Directory">
+    Authenticate against an external LDAP server or Active Directory domain.
+
+    ```yaml
+    xpack.security.authc.realms:
+      ldap.ldap1:
+        order: 1
+        url: "ldaps://ldap.example.com:636"
+        bind_dn: "cn=ldapuser,dc=example,dc=com"
+        user_search.base_dn: "dc=example,dc=com"
+        user_search.filter: "(uid={0})"
+        group_search.base_dn: "dc=example,dc=com"
+        ssl.certificate_authorities: "/etc/elasticsearch/certs/ca.crt"
+    ```
+
+    Store the bind password in the Elasticsearch keystore, not in `elasticsearch.yml`:
+
+    ```sh
+    bin/elasticsearch-keystore add \
+      xpack.security.authc.realms.ldap.ldap1.secure_bind_password
+    ```
+  </Tab>
+  <Tab title="PKI">
+    Authenticate clients using X.509 certificates over TLS. Requires `xpack.security.http.ssl.enabled: true` and client certificate authentication enabled on the HTTP layer.
+
+    ```yaml
+    xpack.security.authc.realms:
+      pki.pki1:
+        order: 2
+        certificate_authorities: "/etc/elasticsearch/certs/ca.crt"
+    ```
+  </Tab>
+</Tabs>
+
+## API keys
+
+API keys provide a way to grant long-lived or short-lived programmatic access without sharing user credentials.
+
+### Creating an API key
+
+```json
+POST /_security/api_key
+{
+  "name": "my-ingest-key",
+  "expiration": "30d",
+  "role_descriptors": {
+    "ingest_role": {
+      "cluster": ["monitor"],
+      "indices": [
+        {
+          "names": ["logs-*"],
+          "privileges": ["write", "create_index"]
+        }
+      ]
+    }
+  }
+}
+```
+
+The response includes `id` and `api_key`. Store `api_key` securely — it is shown only once.
+
+```json
+{
+  "id": "VuaCfGcBCdbkQm-e5aOx",
+  "name": "my-ingest-key",
+  "api_key": "ui2lp2axTNmsyakw9tvNnw",
+  "encoded": "VnVhQ2ZHY0JDZGJrUW0tZTVhT3g6dWkybHAyYXhUTm1zeWFrdzl0dk5udw=="
+}
+```
+
+### Using an API key in requests
+
+Encode the key as `base64(id:api_key)` and pass it in the `Authorization` header:
+
+```sh
+curl -H "Authorization: ApiKey VnVhQ2ZHY0JDZGJrUW0tZTVhT3g6dWkybHAyYXhUTm1zeWFrdzl0dk5udw==" \
+  https://localhost:9200/_cluster/health
+```
+
+Or use the pre-encoded `encoded` field from the create response directly.
+
+### API key settings
+
+| Setting | Default | Description |
+|---|---|---|
+| `xpack.security.authc.api_key.enabled` | `true` | Enables the API key service. |
+| `xpack.security.authc.api_key.cache.ttl` | `1d` | How long to cache API key credentials in memory. |
+| `xpack.security.authc.api_key.cache.max_keys` | `10000` | Maximum number of API keys held in the cache. |
+| `xpack.security.authc.api_key.delete.retention_period` | `7d` | How long invalidated or expired keys are retained before deletion. Dynamic. |
+
+## Role-based access control (RBAC)
+
+Every authenticated request in Elasticsearch is authorized against one or more roles assigned to the user or API key.
+
+### Built-in roles
+
+<CardGroup cols={2}>
+  <Card title="superuser" icon="shield-halved">
+    Full read/write access to the entire cluster, including cluster administration, index management, and user management.
+  </Card>
+  <Card title="kibana_admin" icon="chart-bar">
+    Full access to all Kibana features. Does not grant direct Elasticsearch index access.
+  </Card>
+  <Card title="viewer" icon="eye">
+    Read-only access to all indices and Kibana features. Suitable for dashboards and reporting.
+  </Card>
+  <Card title="editor" icon="pen">
+    Read and write access to Elasticsearch data and most Kibana features, but cannot manage users or roles.
+  </Card>
+</CardGroup>
+
+### Custom roles
+
+Create or update a custom role using the role API:
+
+```json
+PUT /_security/role/logs_reader
+{
+  "cluster": ["monitor"],
+  "indices": [
+    {
+      "names": ["logs-*", "metrics-*"],
+      "privileges": ["read", "view_index_metadata"]
+    }
+  ],
+  "applications": [
+    {
+      "application": "kibana-.kibana",
+      "privileges": ["feature_discover.read"],
+      "resources": ["space:default"]
+    }
+  ]
+}
+```
+
+Assign the role to a user:
+
+```json
+POST /_security/user/analyst
+{
+  "password": "changeme123!",
+  "roles": ["logs_reader"],
+  "full_name": "Data Analyst"
+}
+```
+
+### Document and field level security
+
+Restrict access to specific documents or fields within an index using role definitions:
+
+```json
+PUT /_security/role/restricted_reader
+{
+  "indices": [
+    {
+      "names": ["orders-*"],
+      "privileges": ["read"],
+      "query": "{\"term\": {\"region\": \"us-east\"}}",
+      "field_security": {
+        "grant": ["order_id", "amount", "timestamp"],
+        "except": ["customer_pii"]
+      }
+    }
+  ]
+}
+```
+
+| Setting | Default | Description |
+|---|---|---|
+| `xpack.security.dls_fls.enabled` | `true` | Enables document and field level security. Set to `false` to prevent configuring DLS/FLS. |
+| `xpack.security.dls.bitset.cache.size` | `10%` | Maximum memory for caching DLS BitSet objects. Accepts bytes (`200mb`) or heap percentage (`5%`). |
+| `xpack.security.dls.bitset.cache.ttl` | `2h` | Time-to-live for cached DLS BitSet entries. |
+
+## TLS and transport encryption
+
+Elasticsearch 8+ auto-configures TLS for both the transport (node-to-node) and HTTP (client-to-node) layers during initial setup. Certificates are stored in `config/certs/`.
+
+<Tabs>
+  <Tab title="HTTP TLS settings">
+    ```yaml
+    xpack.security.http.ssl.enabled: true
+    xpack.security.http.ssl.keystore.path: certs/http.p12
+    ```
+
+    The keystore password is stored in the Elasticsearch keystore:
+
+    ```sh
+    bin/elasticsearch-keystore add xpack.security.http.ssl.keystore.secure_password
+    ```
+  </Tab>
+  <Tab title="Transport TLS settings">
+    ```yaml
+    xpack.security.transport.ssl.enabled: true
+    xpack.security.transport.ssl.verification_mode: certificate
+    xpack.security.transport.ssl.keystore.path: certs/transport.p12
+    xpack.security.transport.ssl.truststore.path: certs/transport.p12
+    ```
+  </Tab>
+  <Tab title="LDAP TLS settings">
+    When connecting to an LDAP server over LDAPS, configure the SSL settings in the realm:
+
+    ```yaml
+    xpack.security.authc.realms:
+      ldap.ldap1:
+        order: 1
+        url: "ldaps://ldap.example.com:636"
+        ssl.certificate_authorities: "/etc/elasticsearch/certs/ca.crt"
+        ssl.verification_mode: full
+    ```
+
+    Valid values for `ssl.verification_mode`: `full` (default), `certificate`, `none`.
+
+    <Warning>
+      Setting `ssl.verification_mode: none` disables certificate validation entirely. Only use this temporarily under guidance from Elastic Support.
+    </Warning>
+  </Tab>
+</Tabs>
+
+<Note>
+  TLS is required on the transport layer whenever `xpack.security.enabled` is `true`. Disabling transport TLS on a secured cluster will prevent nodes from joining.
+</Note>
+
+## Token service
+
+Short-lived tokens provide session-like access for browser-based clients such as Kibana.
+
+| Setting | Default | Description |
+|---|---|---|
+| `xpack.security.authc.token.enabled` | `true` | Enables the token service. Automatically `false` if HTTP SSL is disabled, to prevent token sniffing over plaintext. |
+| `xpack.security.authc.token.timeout` | `20m` | Validity period for issued tokens. Maximum is `1h`. |
+
+## Security domains
+
+Group multiple realms into a single *security domain* so that users authenticated by any realm in the domain share the same identity for audit logging and authorization:
+
+```yaml
+xpack:
+  security:
+    authc:
+      domains:
+        my_domain:
+          realms: ['default_native', 'saml1']
+```

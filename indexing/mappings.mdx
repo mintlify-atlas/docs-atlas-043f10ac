@@ -1,0 +1,256 @@
+---
+title: "Mappings"
+description: "Define field types, analyzers, and index options for your Elasticsearch indices using explicit or dynamic mappings."
+---
+
+A mapping defines how documents and their fields are stored and indexed. It controls the field type for each field (such as `text`, `keyword`, or `date`), which analyzer processes text fields, and how fields are made available for search, sorting, and aggregations.
+
+## Dynamic mapping
+
+By default, Elasticsearch detects field types automatically the first time a document is indexed. This is called dynamic mapping.
+
+```bash
+# Index a document — Elasticsearch infers the field types
+curl -X POST "http://localhost:9200/products/_doc/1" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Wireless Keyboard",
+    "price": 49.99,
+    "in_stock": true,
+    "created_at": "2024-01-15T09:00:00Z"
+  }'
+```
+
+Elasticsearch infers the following types for this document:
+
+| Field | Inferred type |
+|-------|---------------|
+| `name` | `text` with a `.keyword` sub-field |
+| `price` | `float` |
+| `in_stock` | `boolean` |
+| `created_at` | `date` |
+
+### Controlling dynamic mapping
+
+You can restrict or disable dynamic mapping by setting the `dynamic` parameter on the index mapping.
+
+<Tabs>
+  <Tab title="dynamic: false">
+    New fields are ignored at index time — they are not indexed and cannot be searched, but they are still stored in `_source`.
+
+    ```bash
+    curl -X PUT "http://localhost:9200/products" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "mappings": {
+          "dynamic": false,
+          "properties": {
+            "name": { "type": "text" },
+            "price": { "type": "float" }
+          }
+        }
+      }'
+    ```
+  </Tab>
+  <Tab title="dynamic: strict">
+    Documents containing unmapped fields are rejected with an error.
+
+    ```bash
+    curl -X PUT "http://localhost:9200/products" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "mappings": {
+          "dynamic": "strict",
+          "properties": {
+            "name": { "type": "text" },
+            "price": { "type": "float" }
+          }
+        }
+      }'
+    ```
+  </Tab>
+</Tabs>
+
+## Explicit mapping
+
+Define field types up front when you create an index. Explicit mappings give you full control over how fields are stored and indexed.
+
+```bash
+curl -X PUT "http://localhost:9200/products" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "mappings": {
+      "properties": {
+        "name": {
+          "type": "text",
+          "analyzer": "english"
+        },
+        "sku": {
+          "type": "keyword"
+        },
+        "price": {
+          "type": "float"
+        },
+        "in_stock": {
+          "type": "boolean"
+        },
+        "created_at": {
+          "type": "date"
+        },
+        "warehouse_ip": {
+          "type": "ip"
+        },
+        "location": {
+          "type": "geo_point"
+        },
+        "description_embedding": {
+          "type": "dense_vector",
+          "dims": 384,
+          "index": true,
+          "similarity": "cosine"
+        }
+      }
+    }
+  }'
+```
+
+## Field types
+
+Each field has a type that determines how its values are indexed and searched.
+
+<CardGroup cols={2}>
+  <Card title="text" icon="align-left">
+    Analyzed for full-text search. Values are passed through an analyzer (tokenization, lowercasing, stemming) before indexing. Use for human-readable content like email bodies or product descriptions.
+  </Card>
+  <Card title="keyword" icon="tag">
+    Stored as-is, without analysis. Use for exact-match filtering, sorting, and aggregations — IDs, status codes, email addresses, tags.
+  </Card>
+  <Card title="integer / long / float / double" icon="hash">
+    Numeric types for amounts and counts. Use `long` for large integers, `float` / `double` for decimal values.
+  </Card>
+  <Card title="boolean" icon="toggle-left">
+    Accepts `true` and `false`. Also accepts `"true"` and `"false"` strings.
+  </Card>
+  <Card title="date" icon="calendar">
+    Accepts ISO 8601 strings (`2024-01-15T09:00:00Z`), formatted date strings, or epoch milliseconds. Store timestamps with `date`.
+  </Card>
+  <Card title="ip" icon="network-wired">
+    Stores IPv4 and IPv6 addresses. Supports CIDR range queries.
+  </Card>
+  <Card title="geo_point" icon="location-dot">
+    Stores latitude/longitude coordinates. Supports geo-distance, geo-bounding-box, and geo-shape queries.
+  </Card>
+  <Card title="dense_vector" icon="chart-scatter">
+    Stores dense float vectors for k-nearest neighbor (kNN) search. Set `dims` to the vector size and choose a `similarity` metric (`cosine`, `dot_product`, `l2_norm`).
+  </Card>
+</CardGroup>
+
+### text vs. keyword
+
+Both `text` and `keyword` store string values, but they behave differently:
+
+| | `text` | `keyword` |
+|---|--------|-----------|
+| Analysis | Analyzed (tokenized, normalized) | Not analyzed (stored as-is) |
+| Full-text search | Yes | No |
+| Exact match | No | Yes |
+| Sorting & aggregations | No (requires `fielddata`) | Yes |
+| Use for | Email body, product names | Status codes, IDs, tags |
+
+A common pattern is to map the same field as both `text` and `keyword` using multi-fields:
+
+```bash
+curl -X PUT "http://localhost:9200/products" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "mappings": {
+      "properties": {
+        "name": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword"
+            }
+          }
+        }
+      }
+    }
+  }'
+```
+
+This lets you use `name` for full-text search and `name.keyword` for sorting and aggregations.
+
+### dense_vector
+
+The `dense_vector` field stores numeric vectors of a fixed dimensionality, used for approximate kNN (semantic/vector) search. Indexing is enabled by default.
+
+```bash
+curl -X PUT "http://localhost:9200/articles" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "mappings": {
+      "properties": {
+        "title_embedding": {
+          "type": "dense_vector",
+          "dims": 384,
+          "index": true,
+          "similarity": "cosine"
+        }
+      }
+    }
+  }'
+```
+
+Key parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| `dims` | Number of dimensions. Cannot exceed 4096. Set to the output size of your embedding model. |
+| `index` | Enable approximate kNN indexing. Defaults to `true`. |
+| `similarity` | Similarity metric: `cosine` (default), `dot_product`, `l2_norm`, `max_inner_product`. |
+| `element_type` | Numeric type per dimension: `float` (default), `byte`, `bit`, `bfloat16`. |
+| `index_options.type` | Index algorithm: `hnsw`, `int8_hnsw`, `bbq_hnsw`, `flat`, etc. |
+
+## Mapping parameters
+
+These parameters control how individual fields are stored and indexed.
+
+| Parameter | Description |
+|-----------|-------------|
+| `index` | Whether the field is searchable. Defaults to `true`. Set to `false` to store but not index. |
+| `store` | Store field values separately from `_source`. Defaults to `false`. |
+| `doc_values` | Store field values in column-stride format for sorting and aggregations. Defaults to `true` for most types. |
+| `analyzer` | Analyzer used at index and search time for `text` fields. Defaults to the `standard` analyzer. |
+| `fields` | Index the same field in multiple ways (multi-fields). |
+| `null_value` | Substitute value for explicit `null` values. |
+
+## Add fields to an existing mapping
+
+Use `PUT /{index}/_mapping` to add new fields to an existing index. You cannot change the type of a field that already exists.
+
+```bash
+curl -X PUT "http://localhost:9200/products/_mapping" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "properties": {
+      "category": {
+        "type": "keyword"
+      },
+      "rating": {
+        "type": "float"
+      }
+    }
+  }'
+```
+
+<Warning>
+  You cannot change the type of an existing mapped field. Doing so requires reindexing your data: create a new index with the updated mapping, then use the Reindex API to copy documents across.
+</Warning>
+
+## Retrieve a mapping
+
+Inspect the current mapping for an index with the Get Mapping API:
+
+```bash
+curl -X GET "http://localhost:9200/products/_mapping"
+```

@@ -1,0 +1,367 @@
+---
+title: "Vector Search"
+description: "Search Elasticsearch using vector embeddings. Learn dense and sparse vector field types, kNN search, approximate nearest neighbor (ANN) strategies, semantic search, and hybrid search with RRF."
+---
+
+Vector search finds documents that are semantically similar to a query, rather than relying on keyword matching. Elasticsearch supports vector search through the `dense_vector` and `sparse_vector` field types, with built-in support for k-nearest neighbor (kNN) retrieval, semantic search, and hybrid ranking.
+
+<CardGroup cols={3}>
+  <Card title="Dense vectors" icon="layer-group">
+    Store fixed-dimension float or byte arrays. Used for embedding-based similarity search (kNN).
+  </Card>
+  <Card title="Sparse vectors" icon="sliders">
+    Store token-weight maps. Used with ELSER-style learned sparse retrieval models.
+  </Card>
+  <Card title="Semantic text" icon="brain">
+    High-level field type that manages inference and indexing automatically via an inference endpoint.
+  </Card>
+</CardGroup>
+
+---
+
+## Dense vectors
+
+The `dense_vector` field type stores fixed-length arrays of numeric values. Dense vectors are primarily used for kNN search.
+
+### Mapping a dense vector field
+
+```json
+PUT my-index
+{
+  "mappings": {
+    "properties": {
+      "text_embedding": {
+        "type": "dense_vector",
+        "dims": 384,
+        "similarity": "cosine"
+      }
+    }
+  }
+}
+```
+
+### Key parameters
+
+| Parameter | Description |
+|---|---|
+| `dims` | Number of dimensions. Maximum 4096. Inferred from the first indexed document if omitted. |
+| `element_type` | Data type per dimension: `float` (default), `bfloat16`, `byte`, or `bit`. |
+| `index` | Whether to build a kNN index. Defaults to `true`. Set to `false` for brute-force only. |
+| `similarity` | Similarity metric: `cosine` (default for non-bit), `dot_product`, `l2_norm`, or `max_inner_product`. |
+| `index_options` | Algorithm and quantization settings (see below). |
+
+### Similarity metrics
+
+<AccordionGroup>
+  <Accordion title="cosine">
+    Measures the angle between two vectors, independent of magnitude. During indexing, Elasticsearch automatically normalizes vectors to unit length and uses `dot_product` internally for efficiency.
+
+    `_score = (1 + cosine(query, vector)) / 2`
+  </Accordion>
+
+  <Accordion title="dot_product">
+    Optimized cosine similarity for unit-length vectors. All document and query vectors must be normalized to unit length when using `element_type: float`.
+
+    `_score = (1 + dot_product(query, vector)) / 2`
+  </Accordion>
+
+  <Accordion title="l2_norm">
+    Uses Euclidean distance between vectors. Smaller distances produce higher scores.
+
+    `_score = 1 / (1 + l2_norm(query, vector)^2)`
+
+    This is the only supported metric for `bit` element type (where it uses Hamming distance).
+  </Accordion>
+
+  <Accordion title="max_inner_product">
+    Like `dot_product` but does not require normalized vectors. Score varies with vector magnitude.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Approximate kNN vs exact kNN
+
+<Tabs>
+  <Tab title="Approximate kNN (ANN)">
+    Elasticsearch uses the [HNSW algorithm](https://arxiv.org/abs/1603.09320) to build a graph-based index for fast approximate nearest neighbor retrieval. This trades a small amount of recall accuracy for dramatically improved query speed on large datasets.
+
+    ANN is the default when `index: true`. Use ANN for production search over thousands or millions of documents.
+
+    ```json
+    PUT my-index
+    {
+      "mappings": {
+        "properties": {
+          "embedding": {
+            "type": "dense_vector",
+            "dims": 768,
+            "similarity": "cosine"
+          }
+        }
+      }
+    }
+    ```
+  </Tab>
+
+  <Tab title="Exact kNN">
+    When `index: false`, or when using `index_options.type: flat`, Elasticsearch performs a brute-force scan of all vectors. This gives exact results but does not scale beyond small datasets.
+
+    ```json
+    PUT my-index
+    {
+      "mappings": {
+        "properties": {
+          "embedding": {
+            "type": "dense_vector",
+            "dims": 768,
+            "index": false
+          }
+        }
+      }
+    }
+    ```
+
+    Exact kNN is also useful in `script_score` queries where you need custom scoring logic.
+  </Tab>
+</Tabs>
+
+---
+
+## Quantization
+
+Quantization reduces the memory footprint of vector indices at the cost of some accuracy. Elasticsearch supports several strategies:
+
+| Index type | Memory reduction | Notes |
+|---|---|---|
+| `hnsw` | None (full float32) | Maximum accuracy |
+| `int8_hnsw` | ~75% (4x) | Default for vectors < 384 dims |
+| `int4_hnsw` | ~87% (8x) | Requires even number of dimensions |
+| `bbq_hnsw` | ~96% (32x) | Default for vectors ≥ 384 dims |
+| `bbq_disk` | ~96% + disk offload | Enterprise; best for RAM-constrained clusters |
+
+```json
+PUT my-quantized-index
+{
+  "mappings": {
+    "properties": {
+      "embedding": {
+        "type": "dense_vector",
+        "dims": 768,
+        "index": true,
+        "index_options": {
+          "type": "int8_hnsw"
+        }
+      }
+    }
+  }
+}
+```
+
+<Note>
+  Quantization stores the raw float vectors on disk for reranking and future reindexing. This adds a small overhead: ~25% for `int8`, ~12.5% for `int4`, and ~3.1% for `bbq`.
+</Note>
+
+---
+
+## kNN search
+
+### Using the knn retriever
+
+The recommended way to run kNN search is via the `knn` retriever in the `_search` API:
+
+```json
+POST my-index/_search
+{
+  "retriever": {
+    "knn": {
+      "field": "embedding",
+      "query_vector": [0.1, 0.4, -0.2, ...],
+      "k": 10,
+      "num_candidates": 100
+    }
+  }
+}
+```
+
+| Parameter | Description |
+|---|---|
+| `field` | The `dense_vector` field to search. |
+| `query_vector` | The query embedding as an array of floats. |
+| `k` | Number of nearest neighbors to return. |
+| `num_candidates` | Number of candidates to consider per shard. Higher values improve recall at the cost of speed. |
+
+### Indexing a document with a vector
+
+```json
+POST my-index/_doc
+{
+  "title": "Introduction to Elasticsearch",
+  "embedding": [0.12, -0.05, 0.88, 0.31, ...]
+}
+```
+
+<Note>
+  By default, `dense_vector` fields are not included in `_source` responses to reduce payload size. Use the `fields` parameter or set `_source.exclude_vectors: false` to retrieve vector values explicitly.
+</Note>
+
+---
+
+## Sparse vectors
+
+The `sparse_vector` field type stores token-weight maps as produced by learned sparse retrieval models such as ELSER. Each document is represented as a set of tokens with associated float weights.
+
+### Mapping a sparse vector field
+
+```json
+PUT my-sparse-index
+{
+  "mappings": {
+    "properties": {
+      "tokens": {
+        "type": "sparse_vector"
+      }
+    }
+  }
+}
+```
+
+### Indexing a sparse vector document
+
+Sparse vectors are typically generated by an ingest pipeline that calls an inference endpoint. You can also index them directly:
+
+```json
+POST my-sparse-index/_doc
+{
+  "tokens": {
+    "retrieval": 2.1,
+    "search": 1.8,
+    "semantic": 1.4,
+    "elastic": 0.9
+  }
+}
+```
+
+### Querying sparse vectors
+
+Use the `sparse_vector` query to search:
+
+```json
+POST my-sparse-index/_search
+{
+  "query": {
+    "sparse_vector": {
+      "field": "tokens",
+      "inference_id": "my-elser-endpoint",
+      "query": "how does semantic search work"
+    }
+  }
+}
+```
+
+<Note>
+  Sparse vectors only support strictly positive token weight values. The `sparse_vector` field does not support sorting or aggregations.
+</Note>
+
+### Token pruning
+
+Sparse vectors support token pruning to improve query performance by omitting low-signal tokens. With indices created in Elasticsearch 9.1 and later, pruning is enabled by default:
+
+```json
+PUT my-sparse-index
+{
+  "mappings": {
+    "properties": {
+      "tokens": {
+        "type": "sparse_vector",
+        "index_options": {
+          "prune": true,
+          "pruning_config": {
+            "tokens_freq_ratio_threshold": 5,
+            "tokens_weight_threshold": 0.4
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+---
+
+## Semantic search
+
+The `semantic_text` field type provides a higher-level abstraction for semantic search. It manages chunking, inference, and indexing automatically using a configured inference endpoint.
+
+```json
+PUT my-semantic-index
+{
+  "mappings": {
+    "properties": {
+      "body": {
+        "type": "semantic_text",
+        "inference_id": "my-inference-endpoint"
+      }
+    }
+  }
+}
+```
+
+At query time, use the `semantic` query:
+
+```json
+POST my-semantic-index/_search
+{
+  "query": {
+    "semantic": {
+      "field": "body",
+      "query": "how does vector search work in Elasticsearch"
+    }
+  }
+}
+```
+
+The inference endpoint handles text encoding. Use a dense embedding model for `dense_vector`-backed semantic search, or ELSER for `sparse_vector`-backed retrieval.
+
+---
+
+## Hybrid search with RRF
+
+Hybrid search combines keyword-based (BM25) and vector-based (kNN) search to improve retrieval quality. Use the **reciprocal rank fusion (RRF)** retriever to merge results from multiple retrievers:
+
+```json
+POST my-index/_search
+{
+  "retriever": {
+    "rrf": {
+      "retrievers": [
+        {
+          "standard": {
+            "query": {
+              "match": {
+                "title": "distributed search"
+              }
+            }
+          }
+        },
+        {
+          "knn": {
+            "field": "embedding",
+            "query_vector": [0.1, 0.4, -0.2, ...],
+            "k": 10,
+            "num_candidates": 100
+          }
+        }
+      ],
+      "rank_window_size": 50,
+      "rank_constant": 60
+    }
+  }
+}
+```
+
+RRF ranks each result by combining the reciprocal of its rank in each individual result list. This avoids the need to normalize and combine raw scores across different retrieval methods.
+
+<Tip>
+  Hybrid search with RRF consistently outperforms either BM25 or kNN alone for most retrieval tasks. It is the recommended approach when you have both text content and embeddings indexed.
+</Tip>

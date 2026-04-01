@@ -1,0 +1,223 @@
+---
+title: "Data Streams"
+description: "Use data streams to manage append-only time-series data like logs, metrics, and traces across multiple backing indices."
+---
+
+A data stream is a named resource for storing append-only, time-series data. Behind the scenes it is backed by multiple indices — Elasticsearch manages the lifecycle of those indices for you, rolling over to new ones as the data grows.
+
+<Note>
+  Every document indexed into a data stream must contain a `@timestamp` field. Elasticsearch uses this field internally to route documents to the correct backing index.
+</Note>
+
+## When to use data streams
+
+Data streams are the right choice when your data has these characteristics:
+
+<CardGroup cols={2}>
+  <Card title="Time-stamped" icon="clock">
+    Each event has a `@timestamp` field. Logs, metrics, traces, and security events all fit this pattern.
+  </Card>
+  <Card title="Append-only" icon="plus">
+    Documents are written once and not individually updated or deleted. New events always come in as new documents.
+  </Card>
+  <Card title="High volume" icon="chart-line">
+    Data volumes are large enough that a single index becomes unwieldy. Data streams automatically roll over to new indices over time.
+  </Card>
+  <Card title="ILM-managed" icon="rotate">
+    You want Elasticsearch to manage index lifecycle (hot → warm → cold → delete) automatically using Index Lifecycle Management (ILM).
+  </Card>
+</CardGroup>
+
+## How data streams work
+
+A data stream has one **write index** — the active backing index that receives new documents. When a rollover occurs (by schedule, size, or document count), Elasticsearch creates a new write index. Older backing indices remain available for search but stop accepting new documents.
+
+All backing indices follow the naming pattern `.ds-{data-stream-name}-{timestamp}-{generation}`.
+
+## Create an index template
+
+Data streams require an index template that matches the stream name pattern and enables the `data_stream` feature. The template defines the mapping and settings applied to each backing index.
+
+<Steps>
+  <Step title="Create an ILM policy (optional)">
+    Define when backing indices should roll over and expire:
+
+    ```bash
+    curl -X PUT "http://localhost:9200/_ilm/policy/logs-policy" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "policy": {
+          "phases": {
+            "hot": {
+              "actions": {
+                "rollover": {
+                  "max_age": "7d",
+                  "max_primary_shard_size": "50gb"
+                }
+              }
+            },
+            "delete": {
+              "min_age": "30d",
+              "actions": {
+                "delete": {}
+              }
+            }
+          }
+        }
+      }'
+    ```
+  </Step>
+  <Step title="Create the index template">
+    The template must include `"data_stream": {}` and an `index_patterns` list that matches the data stream name you plan to use:
+
+    ```bash
+    curl -X PUT "http://localhost:9200/_index_template/logs-template" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "index_patterns": ["logs-*"],
+        "data_stream": {},
+        "template": {
+          "settings": {
+            "index.lifecycle.name": "logs-policy"
+          },
+          "mappings": {
+            "properties": {
+              "@timestamp": {
+                "type": "date"
+              },
+              "message": {
+                "type": "text"
+              },
+              "level": {
+                "type": "keyword"
+              },
+              "service.name": {
+                "type": "keyword"
+              },
+              "host.ip": {
+                "type": "ip"
+              }
+            }
+          }
+        },
+        "priority": 500
+      }'
+    ```
+  </Step>
+  <Step title="Create the data stream">
+    The data stream is created automatically the first time you index a document into a name that matches the template pattern. You can also create it explicitly:
+
+    ```bash
+    curl -X PUT "http://localhost:9200/_data_stream/logs-app-prod"
+    ```
+  </Step>
+</Steps>
+
+## Index into a data stream
+
+Use `POST /{data-stream-name}/_doc` to add documents. You cannot use `PUT` with an explicit ID — data streams are append-only and do not support individual document replacement.
+
+```bash
+curl -X POST "http://localhost:9200/logs-app-prod/_doc" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "@timestamp": "2024-03-01T14:30:00Z",
+    "message": "Disk usage exceeded 90%",
+    "level": "warn",
+    "service.name": "storage-monitor",
+    "host.ip": "10.0.1.42"
+  }'
+```
+
+For high-throughput ingestion, use the Bulk API:
+
+```bash
+curl -X POST "http://localhost:9200/_bulk" \
+  -H "Content-Type: application/x-ndjson" \
+  -d '
+{"create": {"_index": "logs-app-prod"}}
+{"@timestamp": "2024-03-01T14:30:01Z", "message": "Health check OK", "level": "info", "service.name": "api-gateway"}
+{"create": {"_index": "logs-app-prod"}}
+{"@timestamp": "2024-03-01T14:30:05Z", "message": "Timeout connecting to db", "level": "error", "service.name": "user-service"}
+'
+```
+
+<Note>
+  Use `create` (not `index`) as the bulk action for data streams, since `index` with an ID is not allowed.
+</Note>
+
+## Search across a data stream
+
+A search against the data stream name queries across all backing indices transparently:
+
+```bash
+curl -X GET "http://localhost:9200/logs-app-prod/_search" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": {
+      "bool": {
+        "filter": [
+          {
+            "range": {
+              "@timestamp": {
+                "gte": "2024-03-01T00:00:00Z",
+                "lte": "2024-03-01T23:59:59Z"
+              }
+            }
+          },
+          {
+            "term": {
+              "level": "error"
+            }
+          }
+        ]
+      }
+    },
+    "sort": [
+      { "@timestamp": { "order": "desc" } }
+    ]
+  }'
+```
+
+You can also search across multiple data streams using wildcards:
+
+```bash
+curl -X GET "http://localhost:9200/logs-*/_search" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": { "match_all": {} }
+  }'
+```
+
+## Rollover
+
+A rollover creates a new write index and promotes it to be the active backing index. The previous write index becomes read-only.
+
+**Automatic rollover** happens based on the conditions you configured in your ILM policy (max age, max size, max document count).
+
+**Manual rollover** lets you trigger a rollover immediately:
+
+```bash
+curl -X POST "http://localhost:9200/logs-app-prod/_rollover"
+```
+
+After a rollover, you can inspect the backing indices:
+
+```bash
+curl -X GET "http://localhost:9200/_data_stream/logs-app-prod"
+```
+
+The response includes the list of backing indices, the current write index, and the generation count.
+
+## Manage data streams
+
+| Operation | Command |
+|-----------|---------|
+| List all data streams | `GET /_data_stream` |
+| Get a specific stream | `GET /_data_stream/logs-app-prod` |
+| Get stats | `GET /_data_stream/logs-app-prod/_stats` |
+| Delete a data stream | `DELETE /_data_stream/logs-app-prod` |
+
+<Warning>
+  Deleting a data stream deletes all its backing indices and all the data they contain. This operation cannot be undone.
+</Warning>

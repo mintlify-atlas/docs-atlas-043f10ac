@@ -1,80 +1,254 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Run Elasticsearch locally and make your first search query in under five minutes."
 ---
 
-## Get started in three steps
+This guide gets you from zero to a running Elasticsearch instance, an indexed document, and a search result. It uses the `start-local` script, which starts Elasticsearch and Kibana in Docker with a single command.
 
-Get your documentation site running locally and make your first customization.
+<Warning>
+  The `start-local` setup is intended for **local development and testing only**. HTTPS is disabled and basic authentication is used. Do not use this setup in production.
+</Warning>
 
-### Step 1: Set up your local environment
+## Prerequisites
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+- [Docker Desktop](https://www.docker.com/products/docker-desktop) installed and running.
+- On Windows, install [Windows Subsystem for Linux (WSL)](https://learn.microsoft.com/en-us/windows/wsl/install) before proceeding.
 
-### Step 2: Deploy your changes
+<Steps>
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+<Step title="Start Elasticsearch and Kibana">
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+Run the `start-local` script. It creates an `elastic-start-local` directory, writes a `.env` file with credentials, and starts both services via Docker Compose.
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+```bash
+curl -fsSL https://elastic.co/start-local | sh
+```
 
-### Step 3: Go live
+When the script finishes, you will see output similar to:
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+```
+Elasticsearch is running at http://localhost:9200
+Kibana is running at http://localhost:5601
+
+Username: elastic
+Password: <generated-password>
+```
+
+The generated password is also written to `elastic-start-local/.env` as `ES_LOCAL_PASSWORD`. The `.env` file also contains an API key in `ES_LOCAL_API_KEY`.
+
+<Tip>
+  Load the environment variables before running the `curl` examples below:
+
+  ```bash
+  source elastic-start-local/.env
+  export ES_LOCAL_PASSWORD
+  ```
+</Tip>
+
+</Step>
+
+<Step title="Verify Elasticsearch is running">
+
+Confirm the node is up and responding:
+
+<CodeGroup>
+
+```bash curl
+curl -u elastic:$ES_LOCAL_PASSWORD http://localhost:9200
+```
+
+```python Python
+from elasticsearch import Elasticsearch
+
+client = Elasticsearch(
+    "http://localhost:9200",
+    basic_auth=("elastic", "<your-password>")
+)
+
+print(client.info())
+```
+
+</CodeGroup>
+
+You should receive a JSON response with the cluster name, node name, and version:
+
+```json
+{
+  "name": "es01",
+  "cluster_name": "docker-cluster",
+  "version": {
+    "number": "8.x.x",
+    ...
+  },
+  "tagline": "You Know, for Search"
+}
+```
+
+</Step>
+
+<Step title="Index a document">
+
+Add a document to the `my-index` index. Elasticsearch creates the index automatically if it does not exist and assigns the document an ID.
+
+<CodeGroup>
+
+```bash curl
+curl -u elastic:$ES_LOCAL_PASSWORD \
+  -X POST "http://localhost:9200/my-index/_doc" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Elasticsearch quickstart",
+    "body": "Distributed search and analytics at scale.",
+    "category": "documentation",
+    "timestamp": "2024-01-01T00:00:00Z"
+  }'
+```
+
+```python Python
+resp = client.index(
+    index="my-index",
+    document={
+        "title": "Elasticsearch quickstart",
+        "body": "Distributed search and analytics at scale.",
+        "category": "documentation",
+        "timestamp": "2024-01-01T00:00:00Z",
+    },
+)
+print(resp["_id"])
+```
+
+</CodeGroup>
+
+The response includes the assigned `_id` and a `result` field set to `created`:
+
+```json
+{
+  "_index": "my-index",
+  "_id": "abc123",
+  "_version": 1,
+  "result": "created"
+}
+```
+
+</Step>
+
+<Step title="Run a search query">
+
+Search for documents where the `body` field matches `distributed`:
+
+<CodeGroup>
+
+```bash curl
+curl -u elastic:$ES_LOCAL_PASSWORD \
+  -X GET "http://localhost:9200/my-index/_search" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": {
+      "match": {
+        "body": "distributed"
+      }
+    }
+  }'
+```
+
+```python Python
+resp = client.search(
+    index="my-index",
+    query={
+        "match": {
+            "body": "distributed"
+        }
+    },
+)
+for hit in resp["hits"]["hits"]:
+    print(hit["_score"], hit["_source"])
+```
+
+</CodeGroup>
+
+The `hits.hits` array contains matching documents with relevance scores:
+
+```json
+{
+  "hits": {
+    "total": { "value": 1, "relation": "eq" },
+    "hits": [
+      {
+        "_index": "my-index",
+        "_id": "abc123",
+        "_score": 0.6931471,
+        "_source": {
+          "title": "Elasticsearch quickstart",
+          "body": "Distributed search and analytics at scale.",
+          "category": "documentation",
+          "timestamp": "2024-01-01T00:00:00Z"
+        }
+      }
+    ]
+  }
+}
+```
+
+</Step>
+
+<Step title="Run an ES|QL query">
+
+ES|QL is Elasticsearch's piped query language. Use it for filtering, aggregating, and transforming data with a SQL-like syntax.
+
+<CodeGroup>
+
+```bash curl
+curl -u elastic:$ES_LOCAL_PASSWORD \
+  -X POST "http://localhost:9200/_query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "FROM my-index | WHERE category == \"documentation\" | KEEP title, body, timestamp | SORT timestamp DESC | LIMIT 10"
+  }'
+```
+
+```python Python
+resp = client.esql.query(
+    query='FROM my-index | WHERE category == "documentation" | KEEP title, body, timestamp | SORT timestamp DESC | LIMIT 10'
+)
+print(resp["columns"])
+for row in resp["values"]:
+    print(row)
+```
+
+</CodeGroup>
+
+ES|QL returns results in a columnar format:
+
+```json
+{
+  "columns": [
+    { "name": "title", "type": "text" },
+    { "name": "body", "type": "text" },
+    { "name": "timestamp", "type": "date" }
+  ],
+  "values": [
+    ["Elasticsearch quickstart", "Distributed search and analytics at scale.", "2024-01-01T00:00:00.000Z"]
+  ]
+}
+```
+
+</Step>
+
+</Steps>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Installation" icon="download" href="/installation">
+    Deploy Elasticsearch on Linux, macOS, Windows, or with Docker Compose for production-like setups.
+  </Card>
+  <Card title="Core concepts" icon="book" href="/concepts/indices-shards">
+    Understand indices, shards, mappings, and cluster architecture.
+  </Card>
+  <Card title="Search with Query DSL" icon="magnifying-glass" href="/search/query-dsl">
+    Explore the full Query DSL for boolean queries, filters, aggregations, and more.
+  </Card>
+  <Card title="ES|QL" icon="chart-bar" href="/search/esql">
+    Learn the piped ES|QL language for analytics and data transformation.
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

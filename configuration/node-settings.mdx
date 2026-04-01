@@ -1,0 +1,269 @@
+---
+title: "Node Settings"
+description: "Configure Elasticsearch nodes: cluster identity, node roles, data paths, networking, discovery, and JVM heap sizing."
+---
+
+Every running instance of Elasticsearch is a *node*. A group of connected nodes forms a cluster. Each node can handle HTTP and transport traffic by default — the transport layer is used for node-to-node communication, while the HTTP layer serves REST clients.
+
+All nodes know about every other node in the cluster and can forward client requests to the appropriate node.
+
+## Core identity settings
+
+Configure these in `elasticsearch.yml` on every node.
+
+<AccordionGroup>
+  <Accordion title="cluster.name">
+    Nodes join a cluster by sharing the same `cluster.name`. A node can only join one cluster.
+
+    ```yaml
+    cluster.name: my-production-cluster
+    ```
+
+    Defaults to `elasticsearch`. Use a unique name per cluster to prevent nodes from accidentally joining the wrong cluster.
+  </Accordion>
+
+  <Accordion title="node.name">
+    A human-readable identifier for the node. Included in API responses and log output. Defaults to the machine hostname at startup.
+
+    ```yaml
+    node.name: prod-data-2
+    ```
+  </Accordion>
+
+  <Accordion title="path.data">
+    The directory where shard data, index metadata, and cluster state are stored. Defaults to `$ES_HOME/data`.
+
+    ```yaml
+    path.data: /var/elasticsearch/data
+    ```
+
+    Or on the command line:
+
+    ```sh
+    ./bin/elasticsearch -Epath.data=/var/elasticsearch/data
+    ```
+
+    The contents of `path.data` must persist across restarts. Each Elasticsearch node must have its own data path — do not share a data directory between nodes.
+
+    <Warning>
+      Do not modify the contents of the data directory with external tools, run virus scanners on it, or take filesystem-level backups of it. Use [Snapshot and restore](https://www.elastic.co/guide/en/elasticsearch/reference/current/snapshot-restore.html) instead.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="path.logs">
+    The directory where Elasticsearch writes log files. Defaults to `$ES_HOME/logs`.
+
+    ```yaml
+    path.logs: /var/log/elasticsearch
+    ```
+
+    When using `.zip` or `.tar.gz` distributions, configure both `path.data` and `path.logs` outside `$ES_HOME` so the home directory can be upgraded without losing data or logs.
+  </Accordion>
+</AccordionGroup>
+
+## Network settings
+
+<AccordionGroup>
+  <Accordion title="network.host">
+    The address the node binds to and publishes for both HTTP and transport traffic. Accepts an IP address, hostname, or a special value.
+
+    ```yaml
+    network.host: 192.168.1.10
+    ```
+
+    Special values:
+
+    | Value | Resolves to |
+    |---|---|
+    | `_local_` | Loopback addresses (e.g. `127.0.0.1`) |
+    | `_site_` | Site-local addresses |
+    | `_global_` | Globally-routable addresses |
+
+    <Warning>
+      Do not set `network.host: 0.0.0.0` without also enabling and configuring Elasticsearch security. Binding to all interfaces on an unsecured node exposes the cluster to the network.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="http.port">
+    The port for HTTP client traffic. Accepts a single port or a range; Elasticsearch uses the first available port in the range.
+
+    ```yaml
+    http.port: 9200
+    ```
+
+    Defaults to `9200-9300`.
+  </Accordion>
+
+  <Accordion title="transport.port">
+    The port for inter-node transport communication. Accepts a single port or a range.
+
+    ```yaml
+    transport.port: 9300
+    ```
+
+    Defaults to `9300-9400`.
+  </Accordion>
+</AccordionGroup>
+
+## Node roles
+
+Set `node.roles` in `elasticsearch.yml` to assign specific responsibilities to a node. If `node.roles` is not set, the node is assigned all roles automatically.
+
+```yaml
+node.roles: [ master, data, ingest ]
+```
+
+<Note>
+  If you set `node.roles` explicitly, you must include every role your cluster requires. Every cluster needs at least one `master`-eligible node and either a `data` node or both `data_content` and `data_hot` nodes.
+</Note>
+
+### Available roles
+
+<CardGroup cols={2}>
+  <Card title="master" icon="crown">
+    Eligible to be elected as the cluster master. The master node manages cluster-wide state and coordinates shard allocation.
+  </Card>
+  <Card title="data" icon="database">
+    Holds shards and handles data-related operations (CRUD, search, aggregations). Encompasses all data tiers.
+  </Card>
+  <Card title="data_content" icon="layer-group">
+    Holds content data that does not belong to a time-series lifecycle. Required alongside `data_hot` when not using the generic `data` role.
+  </Card>
+  <Card title="data_hot" icon="fire">
+    Holds the most recent time-series data, typically on the fastest hardware.
+  </Card>
+  <Card title="data_warm" icon="temperature-half">
+    Holds older time-series data that is queried less frequently.
+  </Card>
+  <Card title="data_cold" icon="snowflake">
+    Holds infrequently accessed time-series data. Optimized for low cost over query speed.
+  </Card>
+  <Card title="ingest" icon="filter">
+    Executes ingest pipelines to transform documents before indexing. Required for Fleet, Stack Monitoring, and ingest pipeline use.
+  </Card>
+  <Card title="ml" icon="brain">
+    Runs machine learning jobs such as anomaly detection. Required for all ML features.
+  </Card>
+  <Card title="remote_cluster_client" icon="network-wired">
+    Can connect to remote clusters. Required for cross-cluster search (CCS) and cross-cluster replication (CCR).
+  </Card>
+  <Card title="transform" icon="shuffle">
+    Runs transform jobs. Required by Fleet, the Security app, and Kibana transforms.
+  </Card>
+</CardGroup>
+
+### Coordinating-only nodes
+
+Setting `node.roles` to an empty array makes the node a *coordinating-only* node. It routes requests and aggregates results but holds no data and is not master-eligible.
+
+```yaml
+node.roles: []
+```
+
+Use coordinating-only nodes as smart load balancers in large clusters to offload scatter-gather work from data nodes.
+
+## Discovery and cluster formation
+
+These settings are required when forming a new cluster or when nodes need to find each other.
+
+<Tabs>
+  <Tab title="discovery.seed_hosts">
+    A list of hosts that a new node should contact to discover the cluster. Accepts hostnames or IP addresses, optionally with a port.
+
+    ```yaml
+    discovery.seed_hosts:
+      - 192.168.1.10:9300
+      - 192.168.1.11
+      - es-node-3.example.com
+    ```
+
+    If no port is specified, the value of `transport.profiles.default.port` is used, falling back to `transport.port`.
+  </Tab>
+  <Tab title="cluster.initial_master_nodes">
+    The list of master-eligible node names used only during the very first cluster formation. Required to bootstrap a brand-new cluster.
+
+    ```yaml
+    cluster.initial_master_nodes:
+      - node-1
+      - node-2
+      - node-3
+    ```
+
+    <Warning>
+      Remove `cluster.initial_master_nodes` from `elasticsearch.yml` on all nodes after the cluster has formed successfully. If this setting is present when a node restarts into an already-running cluster, it can cause a split-brain scenario. This setting must only be used once, for initial cluster bootstrapping.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## JVM heap sizing
+
+Elasticsearch automatically sets the JVM heap size based on node roles and available memory. Override only when the automatic sizing does not fit your workload.
+
+<Steps>
+  <Step title="Create a JVM options file">
+    Add a file with an `.options` extension to the `jvm.options.d/` directory. Do not edit the root `jvm.options` file.
+
+    | Distribution | Options directory |
+    |---|---|
+    | tar.gz / .zip | `config/jvm.options.d/` |
+    | Debian / RPM | `/etc/elasticsearch/jvm.options.d/` |
+    | Docker | `/usr/share/elasticsearch/config/jvm.options.d/` |
+  </Step>
+  <Step title="Set Xms and Xmx to the same value">
+    Always set minimum (`Xms`) and maximum (`Xmx`) heap to the same value to prevent heap resizing at runtime.
+
+    ```text
+    -Xms4g
+    -Xmx4g
+    ```
+  </Step>
+  <Step title="Observe the 50% RAM limit">
+    Do not allocate more than 50% of the total available RAM to the JVM heap. Elasticsearch needs the remaining memory for off-heap network buffers and the OS filesystem cache.
+
+    ```text
+    # On a 16 GB node, cap heap at 8 GB
+    -Xms8g
+    -Xmx8g
+    ```
+  </Step>
+  <Step title="Stay below the compressed oops threshold">
+    Keep heap at or below approximately 26–30 GB to benefit from compressed ordinary object pointers (oops), which significantly reduces memory overhead. Confirm the setting in the Elasticsearch log:
+
+    ```text
+    heap size [1.9gb], compressed ordinary object pointers [true]
+    ```
+
+    Or query the nodes info API:
+
+    ```json
+    GET _nodes/_all/jvm
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+  For testing only, you can set heap size via the `ES_JAVA_OPTS` environment variable:
+
+  ```sh
+  ES_JAVA_OPTS="-Xms2g -Xmx2g" ./bin/elasticsearch
+  ```
+
+  Do not use `ES_JAVA_OPTS` in production — it overrides all other JVM options.
+</Tip>
+
+## Custom node attributes
+
+Assign arbitrary key-value attributes to a node for use in shard allocation filtering or allocation awareness:
+
+```yaml
+node.attr.rack_id: rack_one
+node.attr.zone: us-east-1a
+```
+
+Or set them at startup:
+
+```sh
+./bin/elasticsearch -Enode.attr.rack_id=rack_one
+```
+
+Attributes are dynamic and do not require a node restart to take effect when used in allocation rules.

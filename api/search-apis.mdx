@@ -1,0 +1,502 @@
+---
+title: "Search APIs"
+description: "Execute full-text queries, aggregations, and analytics across one or more Elasticsearch indices."
+---
+
+The search APIs allow you to find documents, compute aggregations, explain scoring, and run structured queries using Query DSL or ES|QL.
+
+## Search
+
+The core search endpoint. Accepts a query body and returns matching documents with relevance scores.
+
+```
+GET  /{index}/_search
+POST /{index}/_search
+GET  /_search
+POST /_search
+```
+
+```bash
+curl -X POST http://localhost:9200/products/_search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": {
+      "match": {
+        "name": "wireless headphones"
+      }
+    },
+    "size": 10,
+    "from": 0
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "took": 3,
+  "timed_out": false,
+  "_shards": {
+    "total": 1,
+    "successful": 1,
+    "skipped": 0,
+    "failed": 0
+  },
+  "hits": {
+    "total": {
+      "value": 24,
+      "relation": "eq"
+    },
+    "max_score": 1.4385,
+    "hits": [
+      {
+        "_index": "products",
+        "_id": "1",
+        "_score": 1.4385,
+        "_source": {
+          "name": "Wireless Headphones",
+          "price": 79.99
+        }
+      }
+    ]
+  }
+}
+```
+
+### Response fields
+
+<ResponseField name="took" type="integer">
+  Time in milliseconds that Elasticsearch spent executing the request (does not include network round-trip time).
+</ResponseField>
+
+<ResponseField name="timed_out" type="boolean">
+  `true` if the search exceeded the configured timeout and returned partial results.
+</ResponseField>
+
+<ResponseField name="hits.total.value" type="integer">
+  Number of matching documents. When `relation` is `"gte"`, the actual count is at least this value.
+</ResponseField>
+
+<ResponseField name="hits.hits" type="array">
+  Array of matching document objects.
+  <Expandable title="hit object properties">
+    <ResponseField name="_index" type="string">The index the document belongs to.</ResponseField>
+    <ResponseField name="_id" type="string">The document ID.</ResponseField>
+    <ResponseField name="_score" type="float">Relevance score. `null` when sorting by a non-score field.</ResponseField>
+    <ResponseField name="_source" type="object">The original document body.</ResponseField>
+    <ResponseField name="sort" type="array">Sort values for this hit. Present when a `sort` clause is specified — required for `search_after` pagination.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Request body parameters
+
+<ParamField body="query" type="object">
+  Query DSL object. Supports `match`, `term`, `range`, `bool`, `knn`, and many others.
+</ParamField>
+
+<ParamField body="size" type="integer" default="10">
+  Maximum number of hits to return.
+</ParamField>
+
+<ParamField body="from" type="integer" default="0">
+  Number of hits to skip. Use with `size` for basic pagination (limited to 10,000 total hits; use `search_after` for deeper pagination).
+</ParamField>
+
+<ParamField body="sort" type="array">
+  Sort order for results. Each element specifies a field and direction. Use `_score` to sort by relevance.
+
+  ```json
+  "sort": [
+    {"price": {"order": "asc"}},
+    {"_score": "desc"}
+  ]
+  ```
+</ParamField>
+
+<ParamField body="_source" type="boolean | array | object">
+  Controls which fields are returned in `_source`. Set to `false` to exclude the source entirely, or provide an array of field names or an include/exclude object.
+</ParamField>
+
+<ParamField body="aggs" type="object">
+  Aggregation definitions. Results are returned alongside hits in the `aggregations` key.
+</ParamField>
+
+<ParamField body="highlight" type="object">
+  Highlight matching terms in the response. Specify fields and optional fragment settings.
+</ParamField>
+
+<ParamField body="suggest" type="object">
+  Spell-check or autocomplete suggestions. Use `term` or `phrase` suggesters.
+</ParamField>
+
+<ParamField body="knn" type="object">
+  k-nearest neighbor vector search parameters. Use alongside a `query` for hybrid search.
+</ParamField>
+
+<ParamField body="timeout" type="string">
+  Maximum time to wait for search responses from all shards, e.g. `5s`. Returns partial results if exceeded.
+</ParamField>
+
+<ParamField body="track_total_hits" type="boolean | integer" default="10000">
+  Set to `true` to always return the exact hit count. Set to `false` to disable count tracking for faster queries. Set to a number to count up to that threshold.
+</ParamField>
+
+---
+
+## Sorting
+
+Use the `sort` parameter to control result ordering. Avoid sorting on `text` fields; use `keyword` or numeric fields instead.
+
+```bash
+curl -X POST http://localhost:9200/products/_search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": {"match_all": {}},
+    "sort": [
+      {"price": {"order": "asc"}},
+      {"name": "asc"},
+      "_score"
+    ]
+  }'
+```
+
+For multi-valued fields, use the `mode` option to pick which value is used for sorting:
+
+```bash
+curl -X POST http://localhost:9200/products/_search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": {"term": {"category": "electronics"}},
+    "sort": [
+      {"ratings": {"order": "desc", "mode": "avg"}}
+    ]
+  }'
+```
+
+**Sort mode values:** `min`, `max`, `avg`, `sum`, `median`.
+
+For geo-distance sorting:
+
+```bash
+curl -X POST http://localhost:9200/stores/_search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": {"match_all": {}},
+    "sort": [
+      {
+        "_geo_distance": {
+          "location": [-73.98, 40.75],
+          "order": "asc",
+          "unit": "km",
+          "mode": "min",
+          "distance_type": "arc"
+        }
+      }
+    ]
+  }'
+```
+
+---
+
+## Pagination
+
+### Basic pagination (from/size)
+
+```bash
+curl -X POST http://localhost:9200/products/_search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from": 20,
+    "size": 10,
+    "query": {"match_all": {}}
+  }'
+```
+
+<Warning>
+  `from` + `size` cannot exceed `index.max_result_window` (default: 10,000). Deep pagination with `from`/`size` is expensive — each shard loads all preceding results into memory. Use `search_after` for pagination beyond a few pages.
+</Warning>
+
+### search_after (recommended for deep pagination)
+
+`search_after` uses the sort values from the last hit on the previous page to fetch the next page. It requires a consistent sort order with a unique tiebreaker.
+
+**Step 1: First page**
+
+```bash
+curl -X POST http://localhost:9200/products/_search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": {"match_all": {}},
+    "size": 10,
+    "sort": [
+      {"price": "asc"},
+      {"_id": "asc"}
+    ]
+  }'
+```
+
+**Step 2: Subsequent pages** — take the `sort` array from the last hit and pass it as `search_after`:
+
+```bash
+curl -X POST http://localhost:9200/products/_search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": {"match_all": {}},
+    "size": 10,
+    "sort": [
+      {"price": "asc"},
+      {"_id": "asc"}
+    ],
+    "search_after": [49.99, "product-42"]
+  }'
+```
+
+For stable pagination across index refreshes, combine `search_after` with a point in time (PIT):
+
+```bash
+# Open a PIT
+curl -X POST "http://localhost:9200/products/_pit?keep_alive=2m"
+# Returns: {"id": "<pit_id>"}
+
+# Search with PIT — omit the index from the path
+curl -X POST http://localhost:9200/_search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "size": 10,
+    "query": {"match_all": {}},
+    "pit": {
+      "id": "<pit_id>",
+      "keep_alive": "2m"
+    },
+    "sort": [{"price": "asc"}],
+    "search_after": [49.99, 4294967298]
+  }'
+
+# Close the PIT when done
+curl -X DELETE http://localhost:9200/_pit \
+  -H "Content-Type: application/json" \
+  -d '{"id": "<pit_id>"}'
+```
+
+### Scroll API (deprecated for new code)
+
+<Warning>
+  The scroll API is no longer recommended for new code. Use `search_after` with a PIT instead. Scroll contexts hold resources on the cluster and must be explicitly closed.
+</Warning>
+
+```bash
+# Open a scroll context
+curl -X POST "http://localhost:9200/my-index/_search?scroll=1m" \
+  -H "Content-Type: application/json" \
+  -d '{"size": 100, "query": {"match_all": {}}}'
+
+# Retrieve next batch
+curl -X POST http://localhost:9200/_search/scroll \
+  -H "Content-Type: application/json" \
+  -d '{
+    "scroll": "1m",
+    "scroll_id": "<scroll_id_from_previous_response>"
+  }'
+
+# Close when done
+curl -X DELETE http://localhost:9200/_search/scroll \
+  -H "Content-Type: application/json" \
+  -d '{"scroll_id": "<scroll_id>"}'
+```
+
+---
+
+## Multi-search
+
+Execute multiple search requests in a single HTTP call. The body is newline-delimited: each header line (index, preferences) is followed by the search body line.
+
+```
+POST /_msearch
+POST /{index}/_msearch
+```
+
+```bash
+curl -X POST http://localhost:9200/_msearch \
+  -H "Content-Type: application/x-ndjson" \
+  -d '
+{"index": "products"}
+{"query": {"match": {"name": "keyboard"}}, "size": 5}
+{"index": "orders"}
+{"query": {"range": {"total": {"gte": 100}}}, "size": 5}
+'
+```
+
+**Response:**
+
+```json
+{
+  "took": 10,
+  "responses": [
+    {
+      "took": 4,
+      "hits": {"total": {"value": 3, "relation": "eq"}, "hits": [...]}
+    },
+    {
+      "took": 6,
+      "hits": {"total": {"value": 12, "relation": "eq"}, "hits": [...]}
+    }
+  ]
+}
+```
+
+---
+
+## Count
+
+Return only the count of matching documents without retrieving the documents themselves.
+
+```bash
+curl -X POST http://localhost:9200/products/_count \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": {
+      "term": {"in_stock": true}
+    }
+  }'
+```
+
+```json
+{
+  "count": 47,
+  "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0}
+}
+```
+
+---
+
+## Explain
+
+Find out why a specific document matches (or does not match) a query, including the full score breakdown.
+
+```
+GET /{index}/_explain/{id}
+POST /{index}/_explain/{id}
+```
+
+```bash
+curl -X POST http://localhost:9200/products/_explain/1 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": {
+      "match": {"name": "wireless headphones"}
+    }
+  }'
+```
+
+```json
+{
+  "_index": "products",
+  "_id": "1",
+  "matched": true,
+  "explanation": {
+    "value": 1.4385,
+    "description": "sum of:",
+    "details": [
+      {
+        "value": 0.9116,
+        "description": "weight(name:wireless in 0)",
+        "details": []
+      },
+      {
+        "value": 0.5269,
+        "description": "weight(name:headphones in 0)",
+        "details": []
+      }
+    ]
+  }
+}
+```
+
+---
+
+## Field capabilities
+
+Inspect which fields exist across one or more indices, their types, and whether they are searchable or aggregatable.
+
+```bash
+curl -X POST http://localhost:9200/_field_caps \
+  -H "Content-Type: application/json" \
+  -d '{
+    "fields": ["price", "name", "in_stock"],
+    "index_filter": {
+      "range": {
+        "@timestamp": {"gte": "2024-01-01"}
+      }
+    }
+  }'
+```
+
+```json
+{
+  "indices": ["products"],
+  "fields": {
+    "price": {
+      "double": {
+        "type": "double",
+        "searchable": true,
+        "aggregatable": true
+      }
+    },
+    "name": {
+      "text": {
+        "type": "text",
+        "searchable": true,
+        "aggregatable": false
+      }
+    }
+  }
+}
+```
+
+---
+
+## ES|QL
+
+The Elasticsearch Query Language (ES|QL) provides a pipe-based syntax for filtering, transforming, and analyzing data. Unlike Query DSL, ES|QL returns tabular results.
+
+```
+POST /_query
+```
+
+```bash
+curl -X POST http://localhost:9200/_query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "FROM products | WHERE price > 50 | STATS avg_price = AVG(price) BY category | SORT avg_price DESC | LIMIT 10"
+  }'
+```
+
+```json
+{
+  "columns": [
+    {"name": "avg_price", "type": "double"},
+    {"name": "category", "type": "keyword"}
+  ],
+  "values": [
+    [149.99, "audio"],
+    [89.50, "peripherals"]
+  ]
+}
+```
+
+<Tip>
+  ES|QL is well-suited for log analysis, metrics exploration, and ad-hoc analytics. For full-text search and relevance ranking, use Query DSL.
+</Tip>
+
+Common ES|QL commands:
+
+| Command | Description |
+|---------|-------------|
+| `FROM <index>` | Select the source index or data stream |
+| `WHERE <condition>` | Filter rows |
+| `STATS ... BY ...` | Aggregate and group |
+| `SORT <field> [ASC\|DESC]` | Order rows |
+| `LIMIT <n>` | Cap the number of rows |
+| `EVAL <field> = <expr>` | Compute new fields |
+| `KEEP <fields>` | Select specific columns |
+| `DROP <fields>` | Remove specific columns |

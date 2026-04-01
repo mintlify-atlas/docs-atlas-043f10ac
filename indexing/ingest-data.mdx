@@ -1,0 +1,213 @@
+---
+title: "Ingest Data"
+description: "Index, update, and delete documents in Elasticsearch using the Document APIs and ingest pipelines."
+---
+
+Elasticsearch stores data as JSON documents inside an index. This page covers the core document operations: indexing, bulk indexing, updating, deleting, upserting, and routing documents through ingest pipelines.
+
+## Index a single document
+
+Use `POST /{index}/_doc` to index a document with an auto-generated ID, or `PUT /{index}/_doc/{id}` to specify your own.
+
+<CodeGroup>
+
+```bash Auto-generated ID
+curl -X POST "http://localhost:9200/logs-app/_doc" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "User logged in",
+    "level": "info",
+    "@timestamp": "2024-03-01T12:00:00Z",
+    "user_id": "u-42"
+  }'
+```
+
+```bash Explicit ID
+curl -X PUT "http://localhost:9200/logs-app/_doc/1" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "User logged in",
+    "level": "info",
+    "@timestamp": "2024-03-01T12:00:00Z",
+    "user_id": "u-42"
+  }'
+```
+
+</CodeGroup>
+
+Elasticsearch returns the document metadata, including the assigned `_id` and the `result` field set to `created` or `updated`.
+
+## Bulk indexing
+
+<Note>
+  `_bulk` is the recommended way to index large amounts of data. Batching requests reduces per-request overhead and significantly improves throughput.
+</Note>
+
+The [Bulk API](https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-bulk) accepts newline-delimited JSON (NDJSON). Each operation requires two lines: an action line and a source document line.
+
+```bash
+curl -X POST "http://localhost:9200/_bulk" \
+  -H "Content-Type: application/x-ndjson" \
+  -d '
+{"index": {"_index": "logs-app", "_id": "1"}}
+{"message": "Application started", "level": "info", "@timestamp": "2024-03-01T08:00:00Z"}
+{"index": {"_index": "logs-app", "_id": "2"}}
+{"message": "Health check passed", "level": "debug", "@timestamp": "2024-03-01T08:01:00Z"}
+{"index": {"_index": "logs-app", "_id": "3"}}
+{"message": "Request timeout", "level": "error", "@timestamp": "2024-03-01T08:05:00Z"}
+'
+```
+
+Each action line supports `index`, `create`, `update`, and `delete` as the operation type. The `create` action fails if a document with the same ID already exists.
+
+Supported actions in a bulk request:
+
+| Action | Description |
+|--------|-------------|
+| `index` | Index or replace a document |
+| `create` | Index only if the document does not already exist |
+| `update` | Partially update an existing document |
+| `delete` | Delete a document (no source line required) |
+
+## Update a document
+
+Use `POST /{index}/_update/{id}` with a `doc` object containing only the fields you want to change. Elasticsearch merges the partial document into the existing one.
+
+```bash
+curl -X POST "http://localhost:9200/logs-app/_update/1" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "doc": {
+      "level": "warn",
+      "reviewed": true
+    }
+  }'
+```
+
+You can also use a Painless script to apply more complex changes, such as incrementing a counter:
+
+```bash
+curl -X POST "http://localhost:9200/logs-app/_update/1" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "script": {
+      "source": "ctx._source.retry_count += params.count",
+      "lang": "painless",
+      "params": {
+        "count": 1
+      }
+    }
+  }'
+```
+
+## Delete a document
+
+Use `DELETE /{index}/_doc/{id}` to remove a document by ID.
+
+```bash
+curl -X DELETE "http://localhost:9200/logs-app/_doc/1"
+```
+
+## Upsert
+
+An upsert updates an existing document or inserts a new one if no document with the given ID exists.
+
+<Tabs>
+  <Tab title="upsert">
+    Use the `upsert` key alongside `doc` to supply the document body to insert when no match is found:
+
+    ```bash
+    curl -X POST "http://localhost:9200/products/_update/1" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "doc": {
+          "price": 100
+        },
+        "upsert": {
+          "name": "Widget",
+          "price": 50,
+          "in_stock": true
+        }
+      }'
+    ```
+
+    If document `1` exists, only `price` is updated. If it does not exist, the full `upsert` body is inserted.
+  </Tab>
+  <Tab title="doc_as_upsert">
+    Use `doc_as_upsert: true` to avoid repeating the document body. The `doc` content is used both as the partial update and as the insert document:
+
+    ```bash
+    curl -X POST "http://localhost:9200/products/_update/1" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "doc": {
+          "name": "Widget",
+          "price": 50,
+          "in_stock": true
+        },
+        "doc_as_upsert": true
+      }'
+    ```
+
+    <Warning>
+      Using ingest pipelines with `doc_as_upsert` is not supported.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Ingest pipelines
+
+Ingest pipelines pre-process documents before they are indexed. A pipeline is a sequence of processors that can transform field values, add fields, remove fields, or parse unstructured text.
+
+### Create a pipeline
+
+Use `PUT /_ingest/pipeline/{id}` to define a pipeline:
+
+```bash
+curl -X PUT "http://localhost:9200/_ingest/pipeline/add-log-metadata" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "description": "Adds environment tag and lowercases log level",
+    "processors": [
+      {
+        "set": {
+          "field": "environment",
+          "value": "production"
+        }
+      },
+      {
+        "lowercase": {
+          "field": "level"
+        }
+      }
+    ]
+  }'
+```
+
+### Apply a pipeline when indexing
+
+Pass the pipeline name as the `pipeline` query parameter on index or bulk requests:
+
+```bash
+curl -X POST "http://localhost:9200/logs-app/_doc?pipeline=add-log-metadata" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Disk usage exceeded 90%",
+    "level": "WARN",
+    "@timestamp": "2024-03-01T14:30:00Z"
+  }'
+```
+
+You can also set a default pipeline on an index so every document passes through it automatically:
+
+```bash
+curl -X PUT "http://localhost:9200/logs-app/_settings" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "index.default_pipeline": "add-log-metadata"
+  }'
+```
+
+<Tip>
+  Use the `_simulate` endpoint on a pipeline to test processors against sample documents before applying them in production.
+</Tip>

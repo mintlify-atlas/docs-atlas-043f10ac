@@ -1,0 +1,159 @@
+---
+title: "Cluster and Node Architecture"
+description: "Understand how Elasticsearch clusters are organized, the roles nodes can play, how requests are routed, and how to interpret cluster health."
+---
+
+An Elasticsearch **cluster** is a group of one or more nodes that hold your data and provide indexing and search capabilities. Every node in the cluster shares the same `cluster.name` setting; this is how nodes discover each other and form a cluster.
+
+A cluster can have a single node (useful for local development) or hundreds of nodes distributed across multiple availability zones. Elasticsearch handles data distribution, replication, and request routing automatically regardless of cluster size.
+
+## Node roles
+
+A node is a single running instance of Elasticsearch. Each node can be assigned one or more **roles** that define what work it performs. Roles are set in `elasticsearch.yml` under the `node.roles` key.
+
+<AccordionGroup>
+  <Accordion title="Master-eligible" icon="crown" defaultOpen={true}>
+    A master-eligible node can be elected as the **active master**. The elected master is responsible for managing cluster-wide state: creating and deleting indices, tracking which nodes belong to the cluster, and deciding where shards are allocated.
+
+    ```yaml
+    node.roles: [ master ]
+    ```
+
+    In production, run at least three dedicated master-eligible nodes to ensure a quorum can always be formed. Master nodes should be given modest resources — they do not hold data and are not on the hot path for search or indexing.
+  </Accordion>
+  <Accordion title="Data" icon="database">
+    Data nodes hold shards and execute data-related operations: indexing documents, running searches, executing aggregations. They are the workhorses of the cluster and typically require the most CPU, memory, and disk.
+
+    ```yaml
+    node.roles: [ data ]
+    ```
+
+    Elasticsearch also supports tiered data roles (`data_hot`, `data_warm`, `data_cold`, `data_frozen`) for implementing [Index Lifecycle Management (ILM)](https://www.elastic.co/guide/en/elasticsearch/reference/current/index-lifecycle-management.html) across storage tiers.
+  </Accordion>
+  <Accordion title="Ingest" icon="arrow-down-to-bracket">
+    Ingest nodes run [ingest pipelines](https://www.elastic.co/guide/en/elasticsearch/reference/current/ingest.html) — sequences of processors that transform documents before they are indexed. Common processors include `grok`, `set`, `remove`, `date`, and `script`.
+
+    ```yaml
+    node.roles: [ ingest ]
+    ```
+
+    For high-volume pipelines, dedicate separate ingest nodes so that pipeline processing does not compete with indexing or search on data nodes.
+  </Accordion>
+  <Accordion title="Coordinating-only" icon="arrows-split-up-and-left">
+    A coordinating-only node has no roles assigned (or only the implicit coordinating role). It acts as a smart load balancer: it receives client requests, fans them out to the appropriate data nodes, and merges the results before returning the response to the client.
+
+    ```yaml
+    node.roles: []
+    ```
+
+    Coordinating nodes are useful when you have heavy aggregation workloads or large result sets that require significant memory to merge. They shield data nodes from the memory pressure of result merging.
+  </Accordion>
+  <Accordion title="Remote cluster client" icon="network-wired">
+    A node with the `remote_cluster_client` role can connect to remote clusters for [cross-cluster search (CCS)](https://www.elastic.co/guide/en/elasticsearch/reference/current/modules-cross-cluster-search.html) and [cross-cluster replication (CCR)](https://www.elastic.co/guide/en/elasticsearch/reference/current/xpack-ccr.html).
+
+    ```yaml
+    node.roles: [ remote_cluster_client ]
+    ```
+  </Accordion>
+  <Accordion title="Machine learning" icon="brain">
+    ML nodes run machine learning jobs, such as anomaly detection and inference tasks. They require significant memory and CPU and should be isolated from data nodes in production deployments.
+
+    ```yaml
+    node.roles: [ ml ]
+    ```
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  In development or small deployments, a single node typically runs all roles simultaneously. This is fine for testing, but dedicated role assignments are strongly recommended in production for isolation and resource management.
+</Note>
+
+## Master election
+
+At any given time, exactly one master-eligible node is **elected** as the active master. The election uses a quorum-based consensus algorithm (Raft-based in Elasticsearch 7.0+). A quorum requires a majority of master-eligible nodes to agree, so you need at least 3 master-eligible nodes to tolerate the loss of one.
+
+<Steps>
+  <Step title="Nodes discover each other">
+    On startup, each master-eligible node tries to discover the others using the seed hosts configured in `discovery.seed_hosts`. In cloud environments, discovery plugins handle this automatically.
+  </Step>
+  <Step title="Quorum is formed">
+    Once enough master-eligible nodes have found each other (at least `(N/2)+1` nodes for a cluster of N master-eligible nodes), an election is triggered.
+  </Step>
+  <Step title="Active master is elected">
+    The node with the highest term number that has an up-to-date cluster state wins the election and becomes the active master. All other master-eligible nodes become followers.
+  </Step>
+  <Step title="Cluster state is published">
+    The elected master publishes the cluster state (shard allocations, index metadata, settings) to all nodes. Nodes confirm receipt before the master commits the state change.
+  </Step>
+</Steps>
+
+## Request routing
+
+Every node in the cluster knows the cluster topology — which shards live on which nodes. This means a client can send a request to any node, and that node will act as the **coordinating node** for the request.
+
+For a search request, the coordinating node:
+
+1. Determines which shards hold data relevant to the query (based on the index name and optional routing value).
+2. Forwards the query phase to one copy of each relevant shard (primary or replica, chosen by round-robin).
+3. Collects the top-N document IDs and scores from each shard.
+4. Fetches the full `_source` for the top documents in the fetch phase.
+5. Merges the results and returns the final response to the client.
+
+This scatter-gather pattern means that adding more data nodes and replicas scales both indexing throughput and search capacity independently.
+
+## Cluster health
+
+Elasticsearch reports cluster health at three levels: **green**, **yellow**, and **red**. You can check health with:
+
+```json
+GET /_cluster/health
+```
+
+Example response:
+
+```json
+{
+  "cluster_name": "my-cluster",
+  "status": "green",
+  "timed_out": false,
+  "number_of_nodes": 3,
+  "number_of_data_nodes": 3,
+  "active_primary_shards": 9,
+  "active_shards": 18,
+  "relocating_shards": 0,
+  "initializing_shards": 0,
+  "unassigned_shards": 0,
+  "delayed_unassigned_shards": 0,
+  "number_of_pending_tasks": 0,
+  "number_of_in_flight_fetch": 0,
+  "task_max_waiting_in_queue_millis": 0,
+  "active_shards_percent_as_number": 100.0
+}
+```
+
+<Columns cols={3}>
+  <Card title="Green" icon="circle-check" color="#22c55e">
+    All primary and replica shards are assigned and active. The cluster is fully operational.
+  </Card>
+  <Card title="Yellow" icon="circle-exclamation" color="#eab308">
+    All primary shards are assigned, but one or more replica shards are unassigned. Data is fully accessible but redundancy is reduced. Common when running a single-node cluster with replicas configured.
+  </Card>
+  <Card title="Red" icon="circle-xmark" color="#ef4444">
+    One or more primary shards are unassigned. Some data may be unavailable. Search requests against affected indices will fail. Immediate attention required.
+  </Card>
+</Columns>
+
+<Tip>
+  To get a per-index breakdown of health status, use `GET /_cluster/health?level=indices`. For shard-level detail, use `GET /_cluster/health?level=shards`. You can also check `GET /_cat/shards?v` to identify unassigned shards and their reasons.
+</Tip>
+
+## Further reading
+
+<CardGroup cols={2}>
+  <Card title="Node settings" icon="sliders" href="/configuration/node-settings">
+    Configure node roles, heap size, thread pools, and network settings for each node type.
+  </Card>
+  <Card title="Performance tuning" icon="gauge-high" href="/configuration/performance">
+    Optimize indexing throughput, search latency, and memory usage for production workloads.
+  </Card>
+</CardGroup>

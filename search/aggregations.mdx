@@ -1,0 +1,404 @@
+---
+title: "Aggregations"
+description: "Summarize, analyze, and extract statistics from Elasticsearch data using bucket, metric, and pipeline aggregations. Learn nesting, the size: 0 trick, and real query examples."
+---
+
+Aggregations are a framework for performing complex data analysis and summarization over indexed documents. They let you compute statistics, identify trends, and extract patterns from large datasets — all within a single search request.
+
+Elasticsearch organizes aggregations into three families:
+
+<CardGroup cols={3}>
+  <Card title="Metric" icon="chart-line">
+    Compute numeric values from field data — averages, sums, percentiles, and more.
+  </Card>
+  <Card title="Bucket" icon="table-cells">
+    Group documents into named buckets based on field values, ranges, or time intervals.
+  </Card>
+  <Card title="Pipeline" icon="arrow-right-arrow-left">
+    Take input from other aggregations rather than documents to compute derived statistics.
+  </Card>
+</CardGroup>
+
+---
+
+## The `size: 0` trick
+
+When you only need aggregation results and not the matching documents, set `"size": 0`. This skips collecting, sorting, and serializing hits — which significantly reduces response size and memory usage:
+
+```json
+POST /orders/_search
+{
+  "size": 0,
+  "aggs": {
+    "total_revenue": {
+      "sum": { "field": "amount" }
+    }
+  }
+}
+```
+
+<Tip>
+  Always use `size: 0` for aggregation-only queries. It can reduce response time by an order of magnitude on large indices.
+</Tip>
+
+---
+
+## Bucket aggregations
+
+Bucket aggregations create groups of documents. Each bucket is associated with a key and a document count. Bucket aggregations can contain nested sub-aggregations.
+
+<AccordionGroup>
+  <Accordion title="terms">
+    Groups documents by the unique values of a field. Returns the top N buckets by document count by default.
+
+    ```json
+    POST /orders/_search
+    {
+      "size": 0,
+      "aggs": {
+        "by_status": {
+          "terms": {
+            "field": "status",
+            "size": 10
+          }
+        }
+      }
+    }
+    ```
+
+    The `size` parameter controls how many unique values to return (default 10).
+  </Accordion>
+
+  <Accordion title="date_histogram">
+    Groups documents into time buckets of a fixed interval. Essential for time-series analysis.
+
+    ```json
+    POST /logs/_search
+    {
+      "size": 0,
+      "aggs": {
+        "events_per_hour": {
+          "date_histogram": {
+            "field": "@timestamp",
+            "calendar_interval": "1h",
+            "format": "yyyy-MM-dd HH:mm"
+          }
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="histogram">
+    Groups numeric field values into fixed-width intervals.
+
+    ```json
+    POST /products/_search
+    {
+      "size": 0,
+      "aggs": {
+        "price_distribution": {
+          "histogram": {
+            "field": "price",
+            "interval": 50,
+            "min_doc_count": 1
+          }
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="range">
+    Groups documents into manually defined numeric or date ranges. Each range is defined with `from` and `to` bounds.
+
+    ```json
+    POST /products/_search
+    {
+      "size": 0,
+      "aggs": {
+        "price_ranges": {
+          "range": {
+            "field": "price",
+            "ranges": [
+              { "to": 50 },
+              { "from": 50, "to": 200 },
+              { "from": 200 }
+            ]
+          }
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="filter">
+    Creates a single bucket containing only documents that match a filter. Useful for computing metrics on a subset without changing the outer query scope.
+
+    ```json
+    POST /sales/_search
+    {
+      "size": 0,
+      "aggs": {
+        "premium_sales": {
+          "filter": { "term": { "tier": "premium" } },
+          "aggs": {
+            "avg_order_value": {
+              "avg": { "field": "amount" }
+            }
+          }
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="composite">
+    Generates composite buckets from multiple value sources and supports efficient pagination over aggregation results. Use this instead of `terms` when you need to paginate through all unique combinations.
+
+    ```json
+    POST /events/_search
+    {
+      "size": 0,
+      "aggs": {
+        "by_region_and_status": {
+          "composite": {
+            "size": 100,
+            "sources": [
+              { "region": { "terms": { "field": "region" } } },
+              { "status": { "terms": { "field": "status" } } }
+            ]
+          }
+        }
+      }
+    }
+    ```
+
+    Use the `after` parameter with the `after_key` from the response to paginate.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Metric aggregations
+
+Metric aggregations compute numeric values from document field data.
+
+<Tabs>
+  <Tab title="Single-value">
+    These aggregations produce a single numeric output:
+
+    | Aggregation | Description |
+    |---|---|
+    | `avg` | Average of field values |
+    | `sum` | Sum of field values |
+    | `min` | Minimum field value |
+    | `max` | Maximum field value |
+    | `cardinality` | Approximate count of distinct values (HyperLogLog++) |
+    | `value_count` | Count of values (including duplicates) |
+
+    ```json
+    POST /transactions/_search
+    {
+      "size": 0,
+      "aggs": {
+        "total":   { "sum":         { "field": "amount" } },
+        "average": { "avg":         { "field": "amount" } },
+        "lowest":  { "min":         { "field": "amount" } },
+        "highest": { "max":         { "field": "amount" } },
+        "unique_customers": { "cardinality": { "field": "customer_id" } }
+      }
+    }
+    ```
+  </Tab>
+
+  <Tab title="Multi-value">
+    These aggregations return multiple metrics:
+
+    | Aggregation | Output |
+    |---|---|
+    | `stats` | `count`, `min`, `max`, `avg`, `sum` in one response |
+    | `extended_stats` | All of `stats` plus variance, std deviation, bounds |
+    | `percentiles` | Values at specified percentile ranks |
+    | `percentile_ranks` | Percentile rank for specified values |
+    | `top_hits` | The top matching documents within each bucket |
+
+    ```json
+    POST /response-times/_search
+    {
+      "size": 0,
+      "aggs": {
+        "latency_stats": {
+          "stats": { "field": "duration_ms" }
+        },
+        "latency_percentiles": {
+          "percentiles": {
+            "field": "duration_ms",
+            "percents": [50, 95, 99]
+          }
+        }
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Pipeline aggregations
+
+Pipeline aggregations operate on the output of other aggregations rather than on raw documents. They enable derived metrics, smoothing, and cross-bucket computations.
+
+<AccordionGroup>
+  <Accordion title="moving_avg">
+    Computes a rolling average over ordered buckets from a sibling histogram or date_histogram aggregation.
+
+    ```json
+    "sales_moving_avg": {
+      "moving_avg": {
+        "buckets_path": "daily_sales>total",
+        "window": 7
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="derivative">
+    Calculates the first-order derivative (rate of change) between adjacent buckets.
+
+    ```json
+    "error_rate_change": {
+      "derivative": {
+        "buckets_path": "hourly_errors>_count"
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="cumulative_sum">
+    Computes the running total of a sibling metric aggregation across ordered buckets.
+
+    ```json
+    "running_total": {
+      "cumulative_sum": {
+        "buckets_path": "daily_revenue>total"
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="bucket_script">
+    Executes a script against per-bucket metric values to compute a derived value. All referenced metrics must be siblings.
+
+    ```json
+    "conversion_rate": {
+      "bucket_script": {
+        "buckets_path": {
+          "orders": "order_count",
+          "visits": "visit_count"
+        },
+        "script": "params.orders / params.visits * 100"
+      }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Nesting aggregations
+
+Bucket aggregations can contain nested sub-aggregations. Sub-aggregations are executed within the context of each bucket, enabling multi-level analysis.
+
+### Example: nested terms + date_histogram + avg
+
+This query groups sales by region, then further breaks each region's sales down by month, and computes the average order value per month per region:
+
+```json
+POST /sales/_search
+{
+  "size": 0,
+  "aggs": {
+    "by_region": {
+      "terms": {
+        "field": "region",
+        "size": 10
+      },
+      "aggs": {
+        "sales_over_time": {
+          "date_histogram": {
+            "field": "order_date",
+            "calendar_interval": "month"
+          },
+          "aggs": {
+            "avg_order_value": {
+              "avg": {
+                "field": "amount"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+The response structure mirrors the nesting:
+
+```json
+{
+  "aggregations": {
+    "by_region": {
+      "buckets": [
+        {
+          "key": "us-east",
+          "doc_count": 4821,
+          "sales_over_time": {
+            "buckets": [
+              {
+                "key_as_string": "2024-10-01",
+                "doc_count": 1203,
+                "avg_order_value": { "value": 84.50 }
+              },
+              {
+                "key_as_string": "2024-11-01",
+                "doc_count": 1587,
+                "avg_order_value": { "value": 91.20 }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+---
+
+## Aggregation scope
+
+By default, aggregations run over all documents that match the `query`. To run an aggregation on a specific subset without affecting the main query, use a `filter` aggregation or the `post_filter` parameter.
+
+```json
+POST /products/_search
+{
+  "query": {
+    "term": { "category": "electronics" }
+  },
+  "size": 10,
+  "aggs": {
+    "in_stock_avg_price": {
+      "filter": { "term": { "in_stock": true } },
+      "aggs": {
+        "avg_price": { "avg": { "field": "price" } }
+      }
+    }
+  }
+}
+```
+
+<Note>
+  The `search.max_buckets` cluster setting limits the total number of buckets that can be returned in a single response. The default is 65,536. Queries that generate more buckets are rejected with an error.
+</Note>

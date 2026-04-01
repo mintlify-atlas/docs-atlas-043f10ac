@@ -1,0 +1,352 @@
+---
+title: "Cluster APIs"
+description: "Monitor and manage your Elasticsearch cluster — health, settings, nodes, shards, and shard allocation."
+---
+
+The cluster APIs give you visibility into the state of your cluster and let you adjust cluster-wide settings, inspect nodes, and manage shard placement.
+
+## Cluster health
+
+The fastest way to check whether your cluster is operational.
+
+```
+GET /_cluster/health
+GET /_cluster/health/{index}
+```
+
+```bash
+curl http://localhost:9200/_cluster/health
+```
+
+```json
+{
+  "cluster_name": "my-cluster",
+  "status": "green",
+  "timed_out": false,
+  "number_of_nodes": 3,
+  "number_of_data_nodes": 3,
+  "active_primary_shards": 10,
+  "active_shards": 20,
+  "relocating_shards": 0,
+  "initializing_shards": 0,
+  "unassigned_shards": 0,
+  "delayed_unassigned_shards": 0,
+  "number_of_pending_tasks": 0,
+  "number_of_in_flight_fetch": 0,
+  "task_max_waiting_in_queue_millis": 0,
+  "active_shards_percent_as_number": 100.0
+}
+```
+
+### Health status meanings
+
+| Status | Meaning |
+|--------|---------|
+| `green` | All primary and replica shards are assigned and operational |
+| `yellow` | All primary shards are assigned, but some replica shards are unassigned |
+| `red` | One or more primary shards are unassigned — some data is unavailable |
+
+<Note>
+  A `yellow` cluster is still fully functional for reads and writes; replica shards are just not providing redundancy. A `red` status means data loss risk or actual loss has occurred on one or more primary shards.
+</Note>
+
+Wait for a specific status before proceeding (useful in scripts):
+
+```bash
+# Block until green or 30 seconds pass
+curl "http://localhost:9200/_cluster/health?wait_for_status=green&timeout=30s"
+```
+
+Check health of a specific index:
+
+```bash
+curl http://localhost:9200/_cluster/health/products
+```
+
+---
+
+## Cluster stats
+
+High-level statistics covering nodes, indices, and shards across the entire cluster.
+
+```bash
+curl http://localhost:9200/_cluster/stats
+```
+
+```json
+{
+  "cluster_name": "my-cluster",
+  "cluster_uuid": "abc123",
+  "status": "green",
+  "indices": {
+    "count": 42,
+    "docs": {"count": 10000000, "deleted": 25000},
+    "store": {"size_in_bytes": 5368709120},
+    "shards": {"total": 84, "primaries": 42}
+  },
+  "nodes": {
+    "count": {"total": 3, "data": 3, "master": 1},
+    "jvm": {
+      "mem": {
+        "heap_used_in_bytes": 1073741824,
+        "heap_max_in_bytes": 4294967296
+      }
+    }
+  }
+}
+```
+
+---
+
+## Cluster state
+
+Returns the full internal state of the cluster: nodes, routing table, metadata for all indices, and more. This is a large payload — always filter it for production use.
+
+```bash
+# Full state (use with caution — very large)
+curl http://localhost:9200/_cluster/state
+
+# Only metadata for a specific index
+curl "http://localhost:9200/_cluster/state/metadata/products?filter_path=metadata.indices.products.settings"
+
+# Check system index flags
+curl "http://localhost:9200/_cluster/state/metadata?filter_path=metadata.indices.*.system"
+```
+
+---
+
+## Cluster settings
+
+Retrieve or update persistent (survive restart) and transient (reset on restart) cluster-wide settings.
+
+### Get settings
+
+```bash
+curl http://localhost:9200/_cluster/settings
+```
+
+```json
+{
+  "persistent": {
+    "cluster": {
+      "routing": {
+        "allocation": {
+          "enable": "all"
+        }
+      }
+    }
+  },
+  "transient": {}
+}
+```
+
+### Update settings
+
+```bash
+curl -X PUT http://localhost:9200/_cluster/settings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "persistent": {
+      "cluster.routing.allocation.enable": "all",
+      "indices.recovery.max_bytes_per_sec": "200mb"
+    }
+  }'
+```
+
+To clear a setting, set its value to `null`:
+
+```bash
+curl -X PUT http://localhost:9200/_cluster/settings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "transient": {
+      "indices.recovery.max_bytes_per_sec": null
+    }
+  }'
+```
+
+<Tip>
+  Prefer `persistent` settings over `transient` ones. Transient settings are cleared when the cluster restarts, which can lead to unexpected behavior after a node failure or planned restart.
+</Tip>
+
+---
+
+## Pending tasks
+
+List cluster-level tasks (such as index creation or shard allocation) that are queued but not yet executed.
+
+```bash
+curl http://localhost:9200/_cluster/pending_tasks
+```
+
+```json
+{
+  "tasks": [
+    {
+      "insert_order": 101,
+      "priority": "URGENT",
+      "source": "create-index [logs-2024-03-22]",
+      "time_in_queue_millis": 150,
+      "time_in_queue": "150ms"
+    }
+  ]
+}
+```
+
+---
+
+## Cluster reroute
+
+Manually move or cancel shard allocations. Used to recover from allocation problems when Elasticsearch won't allocate a shard automatically.
+
+```bash
+# Move a shard from one node to another
+curl -X POST http://localhost:9200/_cluster/reroute \
+  -H "Content-Type: application/json" \
+  -d '{
+    "commands": [
+      {
+        "move": {
+          "index": "products",
+          "shard": 0,
+          "from_node": "node-1",
+          "to_node": "node-2"
+        }
+      }
+    ]
+  }'
+
+# Force-allocate an unassigned primary (data loss risk)
+curl -X POST http://localhost:9200/_cluster/reroute \
+  -H "Content-Type: application/json" \
+  -d '{
+    "commands": [
+      {
+        "allocate_primary": {
+          "index": "products",
+          "shard": 0,
+          "node": "node-1",
+          "accept_data_loss": true
+        }
+      }
+    ]
+  }'
+```
+
+<Warning>
+  `allocate_primary` with `accept_data_loss: true` will assign a primary shard even if it might contain stale or missing data. Only use this as a last resort to recover from a cluster where the primary is permanently lost.
+</Warning>
+
+---
+
+## Node information
+
+```
+GET /_nodes
+GET /_nodes/{node_filter}
+```
+
+```bash
+# All nodes
+curl http://localhost:9200/_nodes
+
+# Only master-eligible nodes
+curl http://localhost:9200/_nodes/master:true
+
+# Specific node by name
+curl http://localhost:9200/_nodes/node-1
+
+# Data nodes only
+curl http://localhost:9200/_nodes/data:true
+
+# Specific info sections
+curl http://localhost:9200/_nodes/node-1/jvm,os,settings
+```
+
+**Node filter examples:**
+
+| Filter | Meaning |
+|--------|---------|
+| `_all` | All nodes |
+| `_local` | The node receiving the request |
+| `_master` | The elected master node |
+| `data:true` | All data nodes |
+| `ingest:true` | All ingest nodes |
+| `node-*` | Nodes matching a name pattern |
+| `10.0.0.*` | Nodes matching an IP pattern |
+
+---
+
+## Node stats
+
+Detailed runtime statistics per node: JVM heap, GC, OS, disk I/O, thread pools, indexing rates, and more.
+
+```bash
+# All stats for all nodes
+curl http://localhost:9200/_nodes/stats
+
+# JVM and OS stats only
+curl http://localhost:9200/_nodes/stats/jvm,os
+
+# Indices stats for a specific node
+curl http://localhost:9200/_nodes/node-1/stats/indices
+
+# Search and indexing contexts
+curl http://localhost:9200/_nodes/stats/indices/search
+```
+
+**Key stat sections:**
+
+| Section | Content |
+|---------|---------|
+| `jvm` | Heap usage, GC collections and time, thread count |
+| `os` | CPU load, memory, swap, cgroup info |
+| `indices` | Document count, store size, indexing rate, search rate, merge activity |
+| `thread_pool` | Queue depth and rejection counts per thread pool (write, search, etc.) |
+| `fs` | Disk space available and I/O stats |
+| `transport` | Inter-node communication bytes |
+| `http` | HTTP connection count |
+
+---
+
+## CAT APIs
+
+The CAT (compact and aligned text) APIs return tabular plain-text output optimized for human consumption in a terminal. They are not intended for application use — use the corresponding JSON APIs instead.
+
+```bash
+# All indices with doc counts and sizes
+curl http://localhost:9200/_cat/indices?v
+
+# Nodes with heap usage and role
+curl http://localhost:9200/_cat/nodes?v&h=name,heap.percent,ram.percent,cpu,master,role
+
+# Shard allocation across nodes
+curl "http://localhost:9200/_cat/shards?v&h=index,shard,prirep,state,node,docs"
+
+# All aliases
+curl http://localhost:9200/_cat/aliases?v
+
+# Thread pool queues and rejections
+curl "http://localhost:9200/_cat/thread_pool/write,search?v"
+```
+
+The `?v` parameter adds column headers. Use `?h=col1,col2` to select specific columns.
+
+<CardGroup cols={2}>
+  <Card title="/_cat/indices" icon="table">
+    Index health, doc count, deleted doc count, primary and total store size.
+  </Card>
+  <Card title="/_cat/nodes" icon="server">
+    Node name, IP, heap %, RAM %, CPU %, master indicator, and roles.
+  </Card>
+  <Card title="/_cat/shards" icon="layers">
+    Shard state (STARTED, INITIALIZING, UNASSIGNED), primary vs replica, node assignment.
+  </Card>
+  <Card title="/_cat/aliases" icon="tag">
+    Alias name, backing index, routing, and filter status.
+  </Card>
+</CardGroup>
+
+<Note>
+  CAT APIs are designed for `curl` and the Kibana Console. For programmatic access, always use the corresponding JSON APIs (`/_cluster/health`, `/_nodes/stats`, etc.) which provide structured, stable output.
+</Note>

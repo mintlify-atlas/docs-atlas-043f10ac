@@ -1,0 +1,351 @@
+---
+title: "Index APIs"
+description: "Create and manage Elasticsearch indices, settings, mappings, templates, and aliases."
+---
+
+Index APIs let you create, configure, and operate on indices — the top-level containers for your data. You can also manage mappings (schema), index templates, and aliases through these APIs.
+
+## Create an index
+
+```
+PUT /{index}
+```
+
+```bash
+curl -X PUT http://localhost:9200/products \
+  -H "Content-Type: application/json" \
+  -d '{
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 1
+    },
+    "mappings": {
+      "properties": {
+        "name": {"type": "text"},
+        "price": {"type": "double"},
+        "in_stock": {"type": "boolean"},
+        "created_at": {"type": "date"}
+      }
+    }
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "acknowledged": true,
+  "shards_acknowledged": true,
+  "index": "products"
+}
+```
+
+<Note>
+  Elasticsearch also creates indices automatically the first time you index a document. For production use, define explicit mappings and settings upfront via index templates to avoid unintended schema inference.
+</Note>
+
+---
+
+## Get index information
+
+Retrieve settings, mappings, and aliases for one or more indices.
+
+```bash
+# Single index
+curl http://localhost:9200/products
+
+# Multiple indices
+curl http://localhost:9200/products,orders
+
+# Wildcard
+curl "http://localhost:9200/logs-2024-*"
+```
+
+---
+
+## Check if an index exists
+
+Returns `200 OK` if the index exists, `404 Not Found` if it does not. No body is returned.
+
+```bash
+curl -I http://localhost:9200/products
+```
+
+---
+
+## Delete an index
+
+<Warning>
+  Deleting an index permanently removes all documents and cannot be undone. Snapshots are the only way to recover deleted data.
+</Warning>
+
+```bash
+curl -X DELETE http://localhost:9200/products
+```
+
+To delete multiple indices at once:
+
+```bash
+curl -X DELETE http://localhost:9200/products,archive-2022
+```
+
+---
+
+## Open and close an index
+
+Closing an index frees up shard resources (heap, file descriptors) while preserving the data. A closed index cannot be searched or indexed into.
+
+```bash
+# Close
+curl -X POST http://localhost:9200/products/_close
+
+# Reopen
+curl -X POST http://localhost:9200/products/_open
+```
+
+---
+
+## Refresh
+
+Make all changes since the last refresh immediately visible to search. Elasticsearch automatically refreshes every second (controlled by `index.refresh_interval`).
+
+```bash
+# Refresh a single index
+curl -X POST http://localhost:9200/products/_refresh
+
+# Refresh multiple indices
+curl -X POST http://localhost:9200/products,orders/_refresh
+
+# Refresh all indices
+curl -X POST http://localhost:9200/_refresh
+```
+
+<Tip>
+  Avoid calling `_refresh` after every indexing operation in high-throughput pipelines. It reduces indexing throughput significantly. Use `?refresh=wait_for` on individual index requests when you need a specific document to be searchable immediately.
+</Tip>
+
+---
+
+## Flush
+
+Persist operations from the transaction log to Lucene and clear the translog. Useful before taking a snapshot.
+
+```bash
+curl -X POST http://localhost:9200/products/_flush
+```
+
+---
+
+## Force merge
+
+Reduce the number of Lucene segments in an index. Fewer segments improve search performance and reduce memory overhead. On a write-heavy index, avoid force merging until the index is no longer receiving writes.
+
+```bash
+# Merge to a single segment (best for read-only indices)
+curl -X POST "http://localhost:9200/products/_forcemerge?max_num_segments=1"
+
+# Only expunge deleted documents
+curl -X POST "http://localhost:9200/products/_forcemerge?only_expunge_deletes=true"
+```
+
+<Warning>
+  Force merge is resource-intensive and should be run during off-peak hours. Do not run it on active write indices.
+</Warning>
+
+---
+
+## Update index settings
+
+Dynamically change settings on an existing index. Some settings (such as `number_of_shards`) are immutable after index creation.
+
+```bash
+curl -X PUT http://localhost:9200/products/_settings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "index": {
+      "number_of_replicas": 2,
+      "refresh_interval": "30s"
+    }
+  }'
+```
+
+Temporarily disable refresh during a large bulk load, then restore it:
+
+```bash
+# Disable
+curl -X PUT http://localhost:9200/products/_settings \
+  -H "Content-Type: application/json" \
+  -d '{"index": {"refresh_interval": "-1"}}'
+
+# Re-enable (restore default)
+curl -X PUT http://localhost:9200/products/_settings \
+  -H "Content-Type: application/json" \
+  -d '{"index": {"refresh_interval": null}}'
+```
+
+---
+
+## Mappings
+
+Mappings define the schema for an index — the field names and their data types.
+
+### Get mapping
+
+```bash
+curl http://localhost:9200/products/_mapping
+```
+
+### Add or update fields
+
+You can add new fields to an existing mapping, but you cannot change the type of an existing field. To change a field's type, you must reindex into a new index.
+
+```bash
+curl -X PUT http://localhost:9200/products/_mapping \
+  -H "Content-Type: application/json" \
+  -d '{
+    "properties": {
+      "description": {
+        "type": "text",
+        "analyzer": "english"
+      },
+      "sku": {
+        "type": "keyword"
+      }
+    }
+  }'
+```
+
+<Note>
+  Adding a new field does not reindex existing documents. The new field will only appear in documents indexed after the mapping update.
+</Note>
+
+---
+
+## Index templates
+
+Index templates define settings and mappings that are automatically applied when a new index whose name matches the template pattern is created.
+
+### Create a composable index template
+
+```bash
+curl -X PUT http://localhost:9200/_index_template/logs-template \
+  -H "Content-Type: application/json" \
+  -d '{
+    "index_patterns": ["logs-*"],
+    "priority": 100,
+    "template": {
+      "settings": {
+        "number_of_shards": 1,
+        "number_of_replicas": 1,
+        "index.lifecycle.name": "logs-policy"
+      },
+      "mappings": {
+        "properties": {
+          "@timestamp": {"type": "date"},
+          "level": {"type": "keyword"},
+          "message": {"type": "text"},
+          "host": {"type": "keyword"}
+        }
+      }
+    }
+  }'
+```
+
+### List templates
+
+```bash
+curl http://localhost:9200/_index_template
+curl http://localhost:9200/_index_template/logs-template
+```
+
+### Delete a template
+
+```bash
+curl -X DELETE http://localhost:9200/_index_template/logs-template
+```
+
+---
+
+## Aliases
+
+Aliases are secondary names that point to one or more indices. They support zero-downtime reindexing, time-based index rolling, and filtered views.
+
+### Manage aliases with the aliases API
+
+```bash
+curl -X POST http://localhost:9200/_aliases \
+  -H "Content-Type: application/json" \
+  -d '{
+    "actions": [
+      {
+        "add": {
+          "index": "products-v2",
+          "alias": "products",
+          "is_write_index": true
+        }
+      },
+      {
+        "remove": {
+          "index": "products-v1",
+          "alias": "products"
+        }
+      }
+    ]
+  }'
+```
+
+**Action types:**
+
+| Action | Description |
+|--------|-------------|
+| `add` | Add an alias to an index |
+| `remove` | Remove an alias from an index |
+| `remove_index` | Delete the underlying index |
+
+### Filtered alias
+
+A filtered alias exposes only a subset of documents, useful for multi-tenant or soft-delete patterns.
+
+```bash
+curl -X POST http://localhost:9200/_aliases \
+  -H "Content-Type: application/json" \
+  -d '{
+    "actions": [
+      {
+        "add": {
+          "index": "orders",
+          "alias": "active-orders",
+          "filter": {
+            "term": {"status": "active"}
+          }
+        }
+      }
+    ]
+  }'
+```
+
+### Get aliases
+
+```bash
+# All aliases for an index
+curl http://localhost:9200/products/_alias
+
+# Specific alias
+curl http://localhost:9200/_alias/active-orders
+
+# Check if an alias exists
+curl -I http://localhost:9200/_alias/products
+```
+
+---
+
+## Common index settings reference
+
+| Setting | Description |
+|---------|-------------|
+| `number_of_shards` | Primary shards. Immutable after creation. |
+| `number_of_replicas` | Replica copies per primary. Can be changed dynamically. |
+| `refresh_interval` | How often to refresh (`1s` default). Set to `-1` to disable. |
+| `index.max_result_window` | Max `from + size` value (default `10000`). |
+| `index.lifecycle.name` | ILM policy name to attach to this index. |
+| `index.routing.allocation.require.*` | Force shards to nodes with matching attributes. |

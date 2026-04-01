@@ -1,0 +1,77 @@
+{
+  "projectType": "api-service",
+  "projectName": "Elasticsearch",
+  "projectDescription": "A distributed, RESTful search and analytics engine built on Apache Lucene, optimized for near real-time full-text search, vector search, and large-scale data analytics.",
+  "theme": "aspen",
+  "primaryColor": "#0dabc7",
+  "lightColor": "#8bc404",
+  "darkColor": "#eebf42",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": ["introduction", "quickstart", "installation"]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": ["concepts/indices-shards", "concepts/documents-mapping", "concepts/cluster-nodes"]
+          },
+          {
+            "group": "Indexing & Data",
+            "pages": ["indexing/ingest-data", "indexing/mappings", "indexing/data-streams"]
+          },
+          {
+            "group": "Search & Analytics",
+            "pages": ["search/query-dsl", "search/esql", "search/vector-search", "search/aggregations"]
+          },
+          {
+            "group": "Configuration & Operations",
+            "pages": ["configuration/node-settings", "configuration/security", "configuration/performance"]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "REST API",
+            "pages": ["api/conventions", "api/document-apis", "api/search-apis", "api/index-apis", "api/cluster-apis"]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Distributed full-text search with near real-time indexing",
+    "Vector search and k-nearest neighbor (kNN) queries",
+    "ES|QL: piped query language for filtering and analytics",
+    "Query DSL: expressive JSON-based query language",
+    "Rich aggregations: bucket, metrics, and pipeline",
+    "Ingest pipelines for data transformation and enrichment",
+    "Data streams for time-series data management",
+    "Index Lifecycle Management (ILM) for automated data tiering",
+    "Machine learning anomaly detection and inference",
+    "Cross-cluster replication and searchable snapshots",
+    "Built-in security with TLS, RBAC, and field-level security",
+    "Horizontal scalability with automatic shard allocation"
+  ],
+  "publicApiSurface": [
+    "PUT /{index} — Create or update an index",
+    "POST /{index}/_doc — Index a document",
+    "GET /{index}/_search — Search documents",
+    "POST /{index}/_bulk — Bulk index/update/delete",
+    "GET /{index}/_mapping — Get index mappings",
+    "POST /_reindex — Reindex documents",
+    "GET /_cluster/health — Cluster health status",
+    "GET /_cat/indices — List indices (human-readable)",
+    "POST /_esql/query — Execute ES|QL query",
+    "GET /{index}/_knn_search — k-nearest neighbor search",
+    "PUT /_ilm/policy/{policy} — Create ILM policy",
+    "POST /_ingest/pipeline/{id} — Create ingest pipeline",
+    "GET /_ml/anomaly_detectors — List ML jobs",
+    "PUT /_snapshot/{repository} — Register snapshot repository"
+  ]
+}

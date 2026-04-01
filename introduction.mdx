@@ -1,0 +1,75 @@
+---
+title: "Introduction"
+description: "Elasticsearch is a distributed search and analytics engine built on Apache Lucene, optimized for speed and relevance on production-scale workloads."
+---
+
+Elasticsearch is a distributed search and analytics engine, scalable data store, and vector database built on Apache Lucene. It stores, searches, and analyzes data of all shapes and sizes in near real time — powering everything from full-text search to AI-augmented applications.
+
+## Use cases
+
+<CardGroup cols={2}>
+  <Card title="Full-text search" icon="magnifying-glass">
+    Relevance-ranked search with the Query DSL, including match queries, phrase matching, fuzzy search, highlighting, and suggestions.
+  </Card>
+  <Card title="Vector search" icon="brain">
+    Dense and sparse vector search for semantic similarity, k-nearest neighbor (kNN) lookups, and hybrid retrieval combining lexical and semantic signals.
+  </Card>
+  <Card title="Retrieval Augmented Generation (RAG)" icon="robot">
+    Retrieve relevant documents from large corpora and pass them as context to large language models — grounding generative AI responses in real data.
+  </Card>
+  <Card title="Logs and metrics" icon="chart-line">
+    Store and query timestamped data with data streams, rollup jobs, and the ES|QL query language for fast aggregations across billions of events.
+  </Card>
+  <Card title="Application Performance Monitoring (APM)" icon="gauge-high">
+    Ingest traces, spans, and metrics from instrumented services to identify latency bottlenecks and error hotspots in distributed applications.
+  </Card>
+  <Card title="Security analytics" icon="shield-halved">
+    Correlate security events, detect threats with EQL event sequences, and power SIEM workflows on top of the Elastic Common Schema (ECS).
+  </Card>
+</CardGroup>
+
+## Architecture overview
+
+Elasticsearch is built around a small number of core primitives that compose into a highly available, horizontally scalable system.
+
+### Clusters and nodes
+
+A **cluster** is a collection of one or more **nodes** — server instances running Elasticsearch — that together hold your data and provide indexing and search capability. Every node belongs to exactly one cluster (identified by `cluster.name`). Nodes can take on one or more roles:
+
+- **Master-eligible nodes** elect a master node that manages cluster-wide state: creating and deleting indices, tracking which nodes are in the cluster, and deciding where to allocate shards.
+- **Data nodes** hold shards and execute data-related operations such as indexing, search, and aggregations.
+- **Ingest nodes** run ingest pipelines that transform documents before indexing.
+- **Coordinating nodes** route requests, reduce results, and distribute bulk indexing.
+
+### Indices and shards
+
+An **index** is a logical namespace for a collection of documents that share a mapping. Under the hood, an index is divided into one or more **primary shards** — each a self-contained Lucene instance capable of indexing and searching a subset of the index data. Each primary shard can have zero or more **replica shards**, which are copies held on different nodes for fault tolerance and read throughput.
+
+When you index a document, Elasticsearch routes it to a primary shard using a hash of the document ID, then replicates it to all replica shards before acknowledging the write.
+
+### Documents and mappings
+
+Elasticsearch stores data as JSON **documents**. Each document belongs to an index and has a unique `_id`. A **mapping** defines the data types and indexing rules for each field — analogous to a schema in a relational database, but with dynamic mapping that automatically infers types when new fields appear.
+
+## Explore the docs
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run Elasticsearch locally with Docker and make your first search query in minutes.
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Install Elasticsearch on Docker, Linux, macOS, or Windows.
+  </Card>
+  <Card title="Core concepts" icon="book" href="/concepts/indices-shards">
+    Deep dive into indices, shards, documents, mappings, and cluster topology.
+  </Card>
+  <Card title="API reference" icon="code" href="/api/conventions">
+    Explore the full REST API — document, search, index, and cluster operations.
+  </Card>
+</CardGroup>
+
+## License
+
+<Note>
+  Elasticsearch is available under a dual license. Source code in the `elasticsearch` repository is licensed under the **Server Side Public License (SSPL) v1** or the **Elastic License 2.0 (ELv2)**, depending on the file. Code under `x-pack/` is licensed under the Elastic License 2.0 only. The free **Basic** tier is available to all users; paid features require an active Elastic subscription. See [Elastic subscriptions](https://www.elastic.co/subscriptions) for details.
+</Note>

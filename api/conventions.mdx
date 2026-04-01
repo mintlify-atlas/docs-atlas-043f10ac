@@ -1,0 +1,327 @@
+---
+title: "API Conventions"
+description: "Common rules, headers, URL patterns, and response formats that apply across all Elasticsearch REST APIs."
+---
+
+The Elasticsearch REST APIs are exposed over HTTP. Unless otherwise noted, the conventions on this page apply to every API.
+
+## Base URL
+
+All API requests target your Elasticsearch node. For a local development instance:
+
+```
+http://localhost:9200
+```
+
+## Authentication
+
+<Tabs>
+  <Tab title="Basic auth">
+    ```bash
+    curl -u elastic:changeme http://localhost:9200/_cluster/health
+    ```
+
+    Or pass the encoded header directly:
+
+    ```bash
+    curl -H "Authorization: Basic $(echo -n 'elastic:changeme' | base64)" \
+      http://localhost:9200/_cluster/health
+    ```
+  </Tab>
+  <Tab title="API key">
+    ```bash
+    curl -H "Authorization: ApiKey <base64-encoded-id:api_key>" \
+      http://localhost:9200/_cluster/health
+    ```
+  </Tab>
+</Tabs>
+
+## Content-Type
+
+All requests with a body must set `Content-Type`. Most APIs accept `application/json`. The bulk and multi-search APIs also accept `application/x-ndjson`.
+
+```bash
+curl -X POST http://localhost:9200/my-index/_search \
+  -H "Content-Type: application/json" \
+  -d '{"query": {"match_all": {}}}'
+```
+
+Elasticsearch only supports UTF-8 encoded JSON. Responses are also UTF-8 encoded.
+
+<Note>
+  When passing a request body via the `source` query parameter (for libraries that don't support bodies on GET requests), also set `source_content_type=application/json`.
+</Note>
+
+## HTTP methods
+
+| Method | Typical use |
+|--------|------------|
+| `GET` | Read data, retrieve documents or settings |
+| `POST` | Create documents (auto ID), run searches, execute scripts |
+| `PUT` | Create or update documents and settings with explicit IDs |
+| `DELETE` | Remove documents, indices, or other resources |
+| `HEAD` | Check existence (returns 200 or 404, no body) |
+
+Many Elasticsearch GET APIs support a request body. If your HTTP library does not support bodies on GET requests, use POST instead — the result is identical.
+
+## Multi-target syntax
+
+Most APIs that accept an `<index>` path parameter also accept multi-target expressions:
+
+| Syntax | Meaning |
+|--------|---------|
+| `my-index` | Single index |
+| `index-a,index-b` | Comma-separated list |
+| `logs-*` | Wildcard pattern |
+| `logs-*,-logs-old-*` | Wildcard with exclusion |
+| `_all` or `*` | All indices |
+
+```bash
+# Search across multiple indices
+curl http://localhost:9200/logs-2024-01,logs-2024-02/_search
+
+# Wildcard pattern
+curl http://localhost:9200/logs-2024-*/_search
+
+# All indices except one
+curl "http://localhost:9200/logs-*,-logs-archive-*/_search"
+```
+
+<Warning>
+  Wildcards do not match hidden indices by default. Use `expand_wildcards=all` to include them. Aliases are resolved after wildcard expressions, so excluding an alias name may still target its backing indices.
+</Warning>
+
+### Multi-target query parameters
+
+<ParamField query="ignore_unavailable" type="boolean" default="false">
+  When `true`, missing or closed concrete indices are silently ignored instead of returning an error.
+</ParamField>
+
+<ParamField query="allow_no_indices" type="boolean" default="true">
+  When `false`, returns an error if a wildcard expression resolves to no indices.
+</ParamField>
+
+<ParamField query="expand_wildcards" type="string" default="open">
+  Controls which index types wildcard patterns can match. Valid values: `open`, `closed`, `hidden`, `all`, `none`. Comma-separated values are accepted.
+</ParamField>
+
+## Date math in index names
+
+You can use date math expressions in index name patterns to target time-series indices:
+
+```
+<static_name{date_math_expr{date_format|time_zone}}>
+```
+
+The angle brackets must be URI-encoded when used in a request path.
+
+| Expression | Resolves to (assuming now = 2024-03-22) |
+|---|---|
+| `<logstash-{now/d}>` | `logstash-2024.03.22` |
+| `<logstash-{now/M}>` | `logstash-2024.03.01` |
+| `<logstash-{now/M{yyyy.MM}}>` | `logstash-2024.03` |
+| `<logstash-{now/M-1M{yyyy.MM}}>` | `logstash-2024.02` |
+
+```bash
+# Search the past 3 days of Logstash indices
+curl "http://localhost:9200/%3Clogstash-%7Bnow%2Fd-2d%7D%3E%2C%3Clogstash-%7Bnow%2Fd-1d%7D%3E%2C%3Clogstash-%7Bnow%2Fd%7D%3E/_search" \
+  -H "Content-Type: application/json" \
+  -d '{"query": {"match": {"message": "error"}}}'
+```
+
+## Common query parameters
+
+These parameters are supported on all REST APIs.
+
+<ParamField query="pretty" type="boolean" default="false">
+  Format the JSON response for human readability. Use only for debugging; it adds overhead.
+</ParamField>
+
+<ParamField query="format" type="string" default="json">
+  Response format. Accepted values: `json`, `yaml`, `cbor`, `smile`.
+</ParamField>
+
+<ParamField query="human" type="boolean" default="false">
+  When `true`, returns human-readable values for statistics alongside machine-readable ones (for example, `"1h"` next to `3600000`).
+</ParamField>
+
+<ParamField query="filter_path" type="string">
+  Comma-separated list of dot-notation paths to include in the response. Supports wildcards. Prefix with `-` to exclude.
+
+  ```bash
+  # Return only took and hit IDs
+  curl "http://localhost:9200/_search?filter_path=took,hits.hits._id"
+
+  # Exclude _shards from the response
+  curl "http://localhost:9200/_count?filter_path=-_shards"
+  ```
+</ParamField>
+
+<ParamField query="error_trace" type="boolean" default="false">
+  When `true`, includes a full Java stack trace in error responses. Useful for debugging unexpected errors.
+</ParamField>
+
+<ParamField query="flat_settings" type="boolean" default="false">
+  When `true`, returns settings in flat dot-notation (`index.number_of_shards`) instead of nested objects.
+</ParamField>
+
+## Response format
+
+Successful write operation responses include:
+
+<ResponseField name="_index" type="string">
+  The index the document was written to.
+</ResponseField>
+
+<ResponseField name="_id" type="string">
+  The document ID.
+</ResponseField>
+
+<ResponseField name="_version" type="integer">
+  The document version number, incremented on each write.
+</ResponseField>
+
+<ResponseField name="result" type="string">
+  The operation outcome: `created`, `updated`, or `deleted`.
+</ResponseField>
+
+<ResponseField name="_shards" type="object">
+  <Expandable title="properties">
+    <ResponseField name="total" type="integer">Total shards targeted.</ResponseField>
+    <ResponseField name="successful" type="integer">Shards that succeeded.</ResponseField>
+    <ResponseField name="failed" type="integer">Shards that failed.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Error responses
+
+```json
+{
+  "error": {
+    "root_cause": [
+      {
+        "type": "index_not_found_exception",
+        "reason": "no such index [my-missing-index]",
+        "index": "my-missing-index"
+      }
+    ],
+    "type": "index_not_found_exception",
+    "reason": "no such index [my-missing-index]"
+  },
+  "status": 404
+}
+```
+
+<ResponseField name="status" type="integer">
+  HTTP status code (400, 404, 429, 500, etc.).
+</ResponseField>
+
+<ResponseField name="error.type" type="string">
+  Machine-readable error type such as `index_not_found_exception` or `illegal_argument_exception`.
+</ResponseField>
+
+<ResponseField name="error.reason" type="string">
+  Human-readable explanation of the error.
+</ResponseField>
+
+## Optimistic concurrency control
+
+Use sequence number and primary term to prevent lost updates when multiple writers target the same document.
+
+```bash
+# Read current seq_no and primary_term
+curl http://localhost:9200/my-index/_doc/1
+
+# Update only if the document hasn't changed
+curl -X PUT "http://localhost:9200/my-index/_doc/1?if_seq_no=5&if_primary_term=1" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Updated title"}'
+```
+
+If the document has been modified since you read it, Elasticsearch returns a `409 Conflict` response.
+
+<Tip>
+  Prefer `if_seq_no` + `if_primary_term` over the older `?version=` parameter. The sequence number approach is safer across primary shard failovers.
+</Tip>
+
+## Rate limiting and back-pressure
+
+When the cluster is under load, Elasticsearch may return `429 Too Many Requests`. Retry with exponential backoff — start with a short delay and double it on each subsequent `429` response.
+
+## API version compatibility
+
+To run an application built for the previous major version without modification after an upgrade, include compatibility headers:
+
+```bash
+curl -H "Content-Type: application/vnd.elasticsearch+json; compatible-with=8" \
+     -H "Accept: application/vnd.elasticsearch+json; compatible-with=8" \
+     http://localhost:9200/_search
+```
+
+<Note>
+  Compatibility headers preserve request/response structure but do not guarantee identical behavior in all cases.
+</Note>
+
+## Unit conventions
+
+### Time units
+
+Durations use suffixed strings: `1d` (days), `2h` (hours), `30m` (minutes), `10s` (seconds), `500ms` (milliseconds), `100micros` (microseconds), `50nanos` (nanoseconds).
+
+### Byte size units
+
+Byte sizes use powers of 1024: `1kb` = 1024 bytes, `1mb`, `1gb`, `1tb`, `1pb`. Raw bytes use no suffix.
+
+### Date math in queries
+
+Query parameters that accept dates (such as `gt`/`lt` in range queries) support date math:
+
+| Expression | Meaning |
+|---|---|
+| `now` | Current time |
+| `now+1h` | One hour from now |
+| `now-1d/d` | Start of yesterday |
+| `2024-01-01\|\|+1M` | 2024-01-01 plus one month |
+
+## Node specification
+
+Cluster-level APIs that target specific nodes accept a node filter list:
+
+```bash
+# All nodes
+GET /_nodes/_all
+
+# Only data nodes
+GET /_nodes/data:true
+
+# Nodes matching a name pattern
+GET /_nodes/node-*
+
+# All nodes except master-eligible ones
+GET /_nodes/_all,master:false
+```
+
+## Request tracing headers
+
+<AccordionGroup>
+  <Accordion title="X-Opaque-Id">
+    Attach an opaque ID to correlate requests across logs and task management output:
+
+    ```bash
+    curl -H "X-Opaque-Id: my-app-request-123" \
+      http://localhost:9200/_search
+    ```
+
+    Keep the set of values finite — Elasticsearch uses this to deduplicate deprecation warnings.
+  </Accordion>
+  <Accordion title="traceparent">
+    W3C trace context header for distributed tracing:
+
+    ```bash
+    curl -H "traceparent: 00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01" \
+      http://localhost:9200/_search
+    ```
+
+    Elasticsearch surfaces `trace.id` from this header in server logs, slow logs, and deprecation logs.
+  </Accordion>
+</AccordionGroup>
